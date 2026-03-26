@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+option optimize_for = SPEED;
+
+package mini2;
+
+import "google/protobuf/empty.proto";
+
+service NodeService {
+  rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty) {}
+  rpc Query(QueryRequest)         returns (QueryResponse)         {}
+  rpc Forward(QueryRequest)       returns (QueryResponse)         {}
+}
+
+message QueryRequest {
+  string          request_id = 1;
+  optional uint32 agency_id  = 2;
+  optional uint32 borough_id = 3;
+  optional uint32 zip_code   = 4;
+  optional float  lat_min    = 5;
+  optional float  lat_max    = 6;
+  optional float  lon_min    = 7;
+  optional float  lon_max    = 8;
+}
+
+message QueryResponse {
+  string          request_id = 1;
+  repeated Record records    = 2;
+  string          from_node  = 3;
+}
+
+// NYC 311 dataset — matches C++ Record struct from mini 1
+message Record {
+  uint32 id           = 1;
+  int64  created_date = 2;
+  int64  closed_date  = 3;
+  uint32 agency_id    = 4;
+  uint32 problem_id   = 5;
+  uint32 status_id    = 6;
+  uint32 borough_id   = 7;
+  uint32 zip_code     = 8;
+  float  latitude     = 9;
+  float  longitude    = 10;
+}

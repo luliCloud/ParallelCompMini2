@@ -37,5 +37,25 @@
 *.out
 *.app
 
-# debug information files
+# Debug information files
 *.dwo
+
+# Build outputs
+server_cpp/build/
+
+# Generated protobuf sources
+*.pb.cc
+*.pb.h
+client_py/mini2_pb2.py
+client_py/mini2_pb2_grpc.py
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Local datasets
+data/*.csv
+
+# IDE files
+.vscode/
+.idea/
