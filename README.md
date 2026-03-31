@@ -101,3 +101,14 @@ mini2/
 | 1 — Basecamp | All 9 nodes start, Ping works across tree         | `server.cpp` Ping, `test_phase1_ping.py`          |
 | 2 — Data     | Query fan-out A→peers, chunked response to client | `server.cpp` Query/Forward, `client.py`           |
 | 3 — Fairness | Concurrent clients, cancel, dynamic chunk size    | `server.cpp` scheduler, `test_phase3_fairness.py` |
+
+
+## Build Instructions
+### C++ Server
+Dependencies: yaml-cpp, gRPC, protobuf, OpenMP (optional for query optimizations)
+```
+cd ParallelCompMini2
+mkdir build && cd build
+cmake ..
+make -j8
+```
