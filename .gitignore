@@ -42,6 +42,9 @@
 
 # Build outputs
 server_cpp/build/
+build/
+build-wsl/
+.deps/
 
 # Generated protobuf sources
 *.pb.cc
@@ -52,9 +55,13 @@ client_py/mini2_pb2_grpc.py
 # Python caches
 __pycache__/
 *.pyc
+.venv*/
 
 # Local datasets
 data/*.csv
+
+# Local logs
+server*.log
 
 # IDE files
 .vscode/
