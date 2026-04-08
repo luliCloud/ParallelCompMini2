@@ -59,6 +59,7 @@ __pycache__/
 
 # Local datasets
 data/*.csv
+benchmarks/*.csv
 
 # Local logs
 server*.log

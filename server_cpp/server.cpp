@@ -4,6 +4,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <yaml-cpp/yaml.h>
 
 #include <grpcpp/server.h>
 #include <grpcpp/server_builder.h>
@@ -15,43 +16,54 @@ using grpc::Server;
 using grpc::ServerBuilder;
 
 // ===== Server Startup =====
-void RunServer(const std::string& node_id, const std::string& dataset_path) {
-    // Default port mapping for nodes A-I
-    uint16_t port = 50051;
-    if (node_id == "A") port = 50051;
-    else if (node_id == "B") port = 50052;
-    else if (node_id == "C") port = 50053;
-    else if (node_id == "D") port = 50054;
-    else if (node_id == "E") port = 50055;
-    else if (node_id == "F") port = 50056;
-    else if (node_id == "G") port = 50057;
-    else if (node_id == "H") port = 50058;
-    else if (node_id == "I") port = 50059;
+void RunServer(const std::string& node_id, const std::string& dataset_path)
+{
+    std::string config_path = "config/node_" + node_id + ".yaml";
 
-    std::string server_address = "0.0.0.0:" + std::to_string(port);
-    Mini2ServiceImpl service(node_id, port);
+    try
+    {
+        YAML::Node config = YAML::LoadFile(config_path);
 
-    // Initialize dataset
-    if (!service.Initialize(dataset_path)) {
-        std::cerr << "Failed to initialize dataset at node: " << node_id << std::endl;
-        return;
-    }
+        std::string host = config["host"].as<std::string>();
+        uint16_t port = config["port"].as<uint16_t>();
 
-    // Build and start server
-    ServerBuilder builder;
-    builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
-    builder.RegisterService(&service);
-    std::unique_ptr<Server> server(builder.BuildAndStart());
+        std::string server_address = host + ":" + std::to_string(port);
+        Mini2ServiceImpl service(node_id, port);
 
-    std::cout << "\n============================================" << std::endl;
-    std::cout << "Mini2 gRPC Server started" << std::endl;
-    std::cout << "[" << node_id << "] Server listening on " << server_address << std::endl;
-    std::cout << "============================================\n" << std::endl;
+        if (config["peers"]) {
+            std::vector<PeerInfo> peers;
+            for (auto const& peer_node : config["peers"]) {
+                PeerInfo p;
+                p.id = peer_node["id"].as<std::string>();
+                p.address = peer_node["host"].as<std::string>() + ":" +
+                           std::to_string(peer_node["port"].as<int>());
+                peers.push_back(p);
+            }
+            service.SetPeers(peers);
+        }
 
-    if (server) {
+        // Initialize dataset
+        if (!service.Initialize(dataset_path)) {
+            std::cerr << "Failed to initialize dataset at node: " << node_id << std::endl;
+            return;
+        }
+
+        // Build and start server
+        ServerBuilder builder;
+        builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
+        builder.RegisterService(&service);
+        std::unique_ptr<Server> server(builder.BuildAndStart());
+
+        std::cout << "\n============================================" << std::endl;
+        std::cout << "Mini2 gRPC Server started" << std::endl;
+        std::cout << "[" << node_id << "] Server listening on " << server_address << std::endl;
+        std::cout << "============================================\n" << std::endl;
+
         server->Wait();
-    } else {
-        std::cerr << "Failed to start server at node: " << node_id << std::endl;
+    } catch (const std::exception& e)
+    {
+        std::cerr << "Node " << node_id << " failed to load config from " << config_path << ": " << e.what() << std::endl;
+        return;
     }
 }
 

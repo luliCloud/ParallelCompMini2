@@ -56,6 +56,20 @@ def parse_args():
     query_parser.add_argument("--lon-min", type=float, default=None)
     query_parser.add_argument("--lon-max", type=float, default=None)
 
+    forward_parser = subparsers.add_parser("forward", help="Send Forward request to the server")
+    forward_parser.add_argument(
+        "--request-id",
+        default=None,
+        help="Request ID for the forward request. If omitted, a random one is generated.",
+    )
+    forward_parser.add_argument("--agency-id", type=int, default=None)
+    forward_parser.add_argument("--borough-id", type=int, default=None)
+    forward_parser.add_argument("--zip-code", type=int, default=None)
+    forward_parser.add_argument("--lat-min", type=float, default=None)
+    forward_parser.add_argument("--lat-max", type=float, default=None)
+    forward_parser.add_argument("--lon-min", type=float, default=None)
+    forward_parser.add_argument("--lon-max", type=float, default=None)
+
     return parser.parse_args()
 
 
@@ -121,6 +135,14 @@ def print_query_request(request):
         print(f"   lon_max = {request.lon_max}")
 
 
+def print_query_response(label: str, response, elapsed_ms: float):
+    print(f"{label} response:")
+    print(f"   response_request_id = {response.request_id}")
+    print(f"   from_node = {response.from_node}")
+    print(f"   records_returned = {len(response.records)}")
+    print(f"   {label}_rtt_ms = {elapsed_ms:.2f}")
+
+
 def run_query(stub, args):
     request = build_query_request(args)
     print_query_request(request)
@@ -129,11 +151,18 @@ def run_query(stub, args):
     response = stub.Query(request, timeout=args.timeout)
     query_ms = (time.perf_counter() - start_query) * 1000
 
-    print("query response:")
-    print(f"   response_request_id = {response.request_id}")
-    print(f"   from_node = {response.from_node}")
-    print(f"   records_returned = {len(response.records)}")
-    print(f"   query_rtt_ms = {query_ms:.2f}")
+    print_query_response("query", response, query_ms)
+
+
+def run_forward(stub, args):
+    request = build_query_request(args)
+    print_query_request(request)
+
+    start_forward = time.perf_counter()
+    response = stub.Forward(request, timeout=args.timeout)
+    forward_ms = (time.perf_counter() - start_forward) * 1000
+
+    print_query_response("forward", response, forward_ms)
 
 
 def run():
@@ -153,6 +182,8 @@ def run():
             run_ping(stub, args.timeout)
         elif args.command == "query":
             run_query(stub, args)
+        elif args.command == "forward":
+            run_forward(stub, args)
 
         total_ms = (time.perf_counter() - start_total) * 1000
         print(f"   total_time_ms = {total_ms:.2f}")
@@ -171,3 +202,8 @@ def run():
 
 if __name__ == "__main__":
     raise SystemExit(run())
+
+# Run command examples:
+# python3 client_py/client.py -s localhost:50051 ping
+# python3 client_py/client.py -s localhost:50051 query --agency-id 1
+# python3 client_py/client.py -s localhost:50051 forward --agency-id 1

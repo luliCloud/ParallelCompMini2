@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 #include <grpcpp/server_context.h>
 #include "mini2.grpc.pb.h"
 #include "dataset.hpp"
@@ -12,6 +13,17 @@ using mini2::QueryRequest;
 using mini2::QueryResponse;
 using google::protobuf::Empty;
 
+struct PeerInfo
+{
+    std::string id;
+    std::string address;
+};
+
+struct ConnectedPeer {
+    std::string id;
+    std::unique_ptr<mini2::NodeService::Stub> stub;
+};
+
 // Mini2 Node Service Implementation
 class Mini2ServiceImpl final : public NodeService::Service {
 public:
@@ -20,6 +32,8 @@ public:
 
     // Initialization
     bool Initialize(const std::string& dataset_path);
+    // Set peer and set up connection
+    void SetPeers(const std::vector<PeerInfo>& peers);
 
     // Service methods (gRPC overrides)
     Status Ping(ServerContext* context, const Empty* request, 
@@ -35,4 +49,5 @@ private:
     std::string node_id_;
     uint16_t port_;
     Dataset dataset_;
+    std::vector<ConnectedPeer> connected_peers_;
 };
