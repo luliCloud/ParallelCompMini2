@@ -1,5 +1,59 @@
 #include "Mini2ServiceImpl.h"
 #include <iostream>
+#include <future>
+#include <grpcpp/grpcpp.h>
+
+namespace {
+
+bool MatchesQuery(const Record& record, const QueryRequest& request) {
+    if (request.has_agency_id() &&
+        record.agency_id != static_cast<uint16_t>(request.agency_id())) {
+        return false;
+    }
+
+    if (request.has_borough_id() &&
+        record.borough_id != static_cast<uint8_t>(request.borough_id())) {
+        return false;
+    }
+
+    if (request.has_zip_code() && record.zip_code != request.zip_code()) {
+        return false;
+    }
+
+    if (request.has_lat_min() && record.latitude < request.lat_min()) {
+        return false;
+    }
+
+    if (request.has_lat_max() && record.latitude > request.lat_max()) {
+        return false;
+    }
+
+    if (request.has_lon_min() && record.longitude < request.lon_min()) {
+        return false;
+    }
+
+    if (request.has_lon_max() && record.longitude > request.lon_max()) {
+        return false;
+    }
+
+    return true;
+}
+
+void AppendRecord(const Record& record, QueryResponse* response) {
+    auto* out = response->add_records();
+    out->set_id(record.id);
+    out->set_created_date(record.created_date);
+    out->set_closed_date(record.closed_date);
+    out->set_agency_id(record.agency_id);
+    out->set_problem_id(record.problem_id);
+    out->set_status_id(record.status_id);
+    out->set_borough_id(record.borough_id);
+    out->set_zip_code(record.zip_code);
+    out->set_latitude(record.latitude);
+    out->set_longitude(record.longitude);
+}
+
+}  // namespace
 
 Mini2ServiceImpl::Mini2ServiceImpl(const std::string& node_id, uint16_t port)
     : node_id_(node_id), port_(port) {}
@@ -21,6 +75,21 @@ bool Mini2ServiceImpl::Initialize(const std::string& dataset_path) {
     }
 }
 
+void Mini2ServiceImpl::SetPeers(const std::vector<PeerInfo>& peers) {
+    connected_peers_.clear();
+    for (const auto& p : peers) {
+        // Create the channel
+        auto channel = grpc::CreateChannel(p.address, grpc::InsecureChannelCredentials());
+
+        // Create the stub
+        ConnectedPeer connected;
+        connected.id = p.id;
+        connected.stub = mini2::NodeService::NewStub(channel);
+
+        connected_peers_.push_back(std::move(connected));
+    }
+}
+
 Status Mini2ServiceImpl::Ping(ServerContext* context, const Empty* request, 
                              Empty* response) {
     std::cout << "[" << node_id_ << "] Received Ping request" << std::endl;
@@ -35,21 +104,75 @@ Status Mini2ServiceImpl::Query(ServerContext* context, const QueryRequest* reque
     response->set_request_id(request->request_id());
     response->set_from_node(node_id_);
 
-    // TODO: Phase 1: Basic query implementation
-    // For now, just return empty response
-    std::cout << "[" << node_id_ << "] Query return 0 records" << std::endl;
+    std::size_t matched = 0;
+    for (const auto& record : dataset_.get_records()) {
+        if (!MatchesQuery(record, *request)) {
+            continue;
+        }
+        AppendRecord(record, response);
+        matched++;
+    }
+
+    std::cout << "[" << node_id_ << "] Query return " << matched
+              << " records" << std::endl;
     return Status::OK;
 }
 
 Status Mini2ServiceImpl::Forward(ServerContext* context, const QueryRequest* request, 
                                 QueryResponse* response) {
-    std::cout << "[" << node_id_ << "] Received Forward request: " 
+    (void)context;
+    std::cout << "[" << node_id_ << "] Received Forward request: "
               << request->request_id() << std::endl;
 
     response->set_request_id(request->request_id());
     response->set_from_node(node_id_);
 
-    // TODO: Phase 2 - Implement forward query logic
+    // Search locally
+    std::size_t local_matched = 0;
+    for (const auto& record : dataset_.get_records()) {
+        if (!MatchesQuery(record, *request)) {
+            continue;
+        }
+        AppendRecord(record, response);
+        local_matched++;
+    }
+
+    // Perform parallel forwarding search request to peers when result is not found in the local memory
+    if (local_matched == 0 && !connected_peers_.empty()) {
+        std::vector<std::future<QueryResponse>> futures;
+
+        for (const auto& peer : connected_peers_) {
+            auto* stub = peer.stub.get();
+            std::string peer_id = peer.id;
+
+            // Launch each peer request in a separate thread for performance
+            futures.push_back(std::async(std::launch::async, [request, stub, peer_id]() {
+                QueryResponse peer_res;
+                grpc::ClientContext peer_ctx;
+                peer_ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+
+                grpc::Status status = stub->Forward(&peer_ctx, *request, &peer_res);
+                if (!status.ok())
+                {
+                    std::cout << "Failed to forward request to peer " << peer_id << ": " << status.error_code() << " " << status.error_message() << std::endl;
+                    return QueryResponse();
+                }
+                return peer_res;
+            }));
+        }
+
+        // Wait for all peer requests to complete and aggregate results
+        for (auto& f : futures) {
+            QueryResponse peer_res = f.get();
+            for (const auto& peer_rec : peer_res.records()) {
+                // Combine peer records into the final response
+                response->add_records()->CopyFrom(peer_rec);
+            }
+        }
+    }
+
+    std::cout << "[" << node_id_ << "] Forward returning " << response->records_size()
+              << " total records (Local matched: " << local_matched << ")" << std::endl;
 
     return Status::OK;
 }
