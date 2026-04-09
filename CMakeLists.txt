@@ -77,6 +77,7 @@ find_package(OpenMP)
 
 # Subdirectories
 add_subdirectory(server_cpp)
+add_subdirectory(client_cpp)
 
 # Display configuration summary
 message(STATUS "========================================")
