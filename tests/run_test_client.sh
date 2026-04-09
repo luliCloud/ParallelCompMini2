@@ -13,8 +13,6 @@ BUILD_DIR="${PROJECT_DIR}/build"
 VENV_DIR="${PROJECT_DIR}/.venv"
 SERVER_EXEC="${BUILD_DIR}/bin/server"
 TEST_SCRIPT="${PROJECT_DIR}/tests/test_client.py"
-DATA_PATH="${PROJECT_DIR}/benchmarks/workload_100k.csv"
-
 # Configuration
 NODE_ID="A"
 SERVER_TIMEOUT=10
@@ -82,12 +80,6 @@ if [ ! -f "$TEST_SCRIPT" ]; then
     exit 1
 fi
 
-# Check if dataset exists
-if [ ! -f "$DATA_PATH" ]; then
-    log_warning "Dataset not found: $DATA_PATH"
-    log_info "Tests will still run, but server may not load data"
-fi
-
 # Check virtual environment
 if [ ! -d "$VENV_DIR" ]; then
     log_error "Virtual environment not found: $VENV_DIR"
@@ -105,10 +97,9 @@ log_info "=========================================="
 
 log_info "Server: $SERVER_EXEC"
 log_info "Node ID: $NODE_ID"
-log_info "Dataset: $DATA_PATH"
 
 # Start server in background
-"$SERVER_EXEC" "$NODE_ID" "$DATA_PATH" > /tmp/mini2_server.log 2>&1 &
+"$SERVER_EXEC" "$NODE_ID" > /tmp/mini2_server.log 2>&1 &
 SERVER_PID=$!
 
 log_success "Server started with PID: $SERVER_PID"

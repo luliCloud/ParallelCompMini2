@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <memory>
+#include <filesystem>
 #include <string>
 #include <yaml-cpp/yaml.h>
 
@@ -14,18 +15,57 @@
 
 using grpc::Server;
 using grpc::ServerBuilder;
+namespace fs = std::filesystem;
+
+namespace {
+
+fs::path ResolveConfigPath(const std::string& node_id) {
+    const fs::path relative = fs::path("config") / ("node_" + node_id + ".yaml");
+    if (fs::exists(relative)) {
+        return relative;
+    }
+
+    const fs::path source_relative = fs::path(MINI2_SOURCE_DIR) / relative;
+    if (fs::exists(source_relative)) {
+        return source_relative;
+    }
+
+    return relative;
+}
+
+fs::path ResolveDatasetPath(const YAML::Node& config, const fs::path& config_path) {
+    const fs::path configured = config["dataset_path"].as<std::string>();
+    if (configured.is_absolute()) {
+        return configured;
+    }
+
+    const fs::path from_cwd = fs::current_path() / configured;
+    if (fs::exists(from_cwd)) {
+        return from_cwd;
+    }
+
+    const fs::path from_source_dir = fs::path(MINI2_SOURCE_DIR) / configured;
+    if (fs::exists(from_source_dir)) {
+        return from_source_dir;
+    }
+
+    return config_path.parent_path() / configured;
+}
+
+}  // namespace
 
 // ===== Server Startup =====
-void RunServer(const std::string& node_id, const std::string& dataset_path)
+void RunServer(const std::string& node_id)
 {
-    std::string config_path = "config/node_" + node_id + ".yaml";
+    const fs::path config_path = ResolveConfigPath(node_id);
 
     try
     {
-        YAML::Node config = YAML::LoadFile(config_path);
+        YAML::Node config = YAML::LoadFile(config_path.string());
 
         std::string host = config["host"].as<std::string>();
         uint16_t port = config["port"].as<uint16_t>();
+        bool coordinator_only = config["coordinator_only"] && config["coordinator_only"].as<bool>();
 
         std::string server_address = host + ":" + std::to_string(port);
         Mini2ServiceImpl service(node_id, port);
@@ -43,9 +83,14 @@ void RunServer(const std::string& node_id, const std::string& dataset_path)
         }
 
         // Initialize dataset
-        if (!service.Initialize(dataset_path)) {
-            std::cerr << "Failed to initialize dataset at node: " << node_id << std::endl;
-            return;
+        if (!coordinator_only) {
+            const fs::path dataset_path = ResolveDatasetPath(config, config_path);
+            if (!service.Initialize(dataset_path.string())) {
+                std::cerr << "Failed to initialize dataset at node: " << node_id << std::endl;
+                return;
+            }
+        } else {
+            std::cout << "Node " << node_id << " is coordinator-only, skipping dataset initialization." << std::endl;
         }
 
         // Build and start server
@@ -62,24 +107,22 @@ void RunServer(const std::string& node_id, const std::string& dataset_path)
         server->Wait();
     } catch (const std::exception& e)
     {
-        std::cerr << "Node " << node_id << " failed to load config from " << config_path << ": " << e.what() << std::endl;
+        std::cerr << "Node " << node_id << " failed to load config from "
+                  << config_path << ": " << e.what() << std::endl;
         return;
     }
 }
 
 // ===== Main Function =====
 int main(int argc, char** argv) {
-    if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << " <NodeID> <DatasetPath>" << std::endl;
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <NodeID>" << std::endl;
         return 1;
     }
 
     std::string node_id = argv[1];
-    std::string dataset_path = argv[2];
-
     std::cout << "Starting node: " << node_id << std::endl;
-    std::cout << "Dataset: " << dataset_path << std::endl;
 
-    RunServer(node_id, dataset_path);
+    RunServer(node_id);
     return 0;
 }

@@ -1,6 +1,7 @@
 node_id:      "B"
 host:         "0.0.0.0"
 port:         50052
+coordinator_only: true
 peers:
   - id:   "C"
     host: "localhost"

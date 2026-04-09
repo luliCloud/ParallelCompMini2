@@ -81,6 +81,10 @@ target_include_directories(server PRIVATE
     ${CMAKE_SOURCE_DIR}/common/include
 )
 
+target_compile_definitions(server PRIVATE
+    MINI2_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
 target_link_libraries(server
     PRIVATE
     mini2_grpc_proto
