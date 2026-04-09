@@ -67,3 +67,6 @@ server*.log
 # IDE files
 .vscode/
 .idea/
+
+# Util files
+/benchmarks/generate_workload.py

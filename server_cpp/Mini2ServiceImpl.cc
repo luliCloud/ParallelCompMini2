@@ -90,9 +90,47 @@ void Mini2ServiceImpl::SetPeers(const std::vector<PeerInfo>& peers) {
     }
 }
 
-Status Mini2ServiceImpl::Ping(ServerContext* context, const Empty* request, 
-                             Empty* response) {
+Status Mini2ServiceImpl::Ping(ServerContext* context, const PingRequest* request,
+                             PingResponse* response) {
+    (void)context;
     std::cout << "[" << node_id_ << "] Received Ping request" << std::endl;
+    response->set_request_id(request->request_id());
+    response->add_active_nodes(node_id_);
+
+    if (!connected_peers_.empty())
+    {
+        std::vector<std::future<PingResponse>> futures;
+
+        for (const auto& peer : connected_peers_)
+        {
+            auto* stub = peer.stub.get();
+            std::string peer_id = peer.id;
+
+            futures.push_back(std::async(std::launch::async, [request, stub, peer_id]()
+            {
+                PingResponse peer_res;
+                grpc::ClientContext peer_ctx;
+                peer_ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(2));
+
+                grpc::Status status = stub->Ping(&peer_ctx, *request, &peer_res);
+                if (!status.ok())
+                {
+                    std::cout << "Failed to ping peer " << peer_id << ": " << status.error_code() << " " << status.error_message() << std::endl;
+                    return PingResponse();
+                }
+                return peer_res;
+            }));
+        }
+
+        for (auto& f : futures)
+        {
+            PingResponse peer_res = f.get();
+            for (const auto& node_name : peer_res.active_nodes())
+            {
+                response->add_active_nodes(node_name);
+            }
+        }
+    }
     return Status::OK;
 }
 

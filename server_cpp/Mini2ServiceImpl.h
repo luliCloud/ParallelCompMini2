@@ -11,7 +11,8 @@ using grpc::Status;
 using mini2::NodeService;
 using mini2::QueryRequest;
 using mini2::QueryResponse;
-using google::protobuf::Empty;
+using mini2::PingRequest;
+using mini2::PingResponse;
 
 struct PeerInfo
 {
@@ -36,8 +37,8 @@ public:
     void SetPeers(const std::vector<PeerInfo>& peers);
 
     // Service methods (gRPC overrides)
-    Status Ping(ServerContext* context, const Empty* request, 
-                Empty* response) override;
+    Status Ping(ServerContext* context, const PingRequest* request,
+                PingResponse* response) override;
 
     Status Query(ServerContext* context, const QueryRequest* request, 
                  QueryResponse* response) override;

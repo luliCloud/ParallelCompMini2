@@ -4,12 +4,19 @@ option optimize_for = SPEED;
 
 package mini2;
 
-import "google/protobuf/empty.proto";
-
 service NodeService {
-  rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty) {}
+  rpc Ping(PingRequest)           returns (PingResponse)          {}
   rpc Query(QueryRequest)         returns (QueryResponse)         {}
   rpc Forward(QueryRequest)       returns (QueryResponse)         {}
+}
+
+message PingRequest {
+  string          request_id = 1;
+}
+
+message PingResponse {
+  string          request_id    = 1;
+  repeated string active_nodes  = 2;
 }
 
 message QueryRequest {
