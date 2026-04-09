@@ -40,7 +40,12 @@ def parse_args():
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("ping", help="Send Ping to the server")
+    ping_parser = subparsers.add_parser("ping", help="Send Ping to the server")
+    ping_parser.add_argument(
+        "--request-id",
+        default=None,
+        help="Request ID for the ping. If omitted, a random one is generated.",
+    )
 
     query_parser = subparsers.add_parser("query", help="Send QueryRequest to the server")
     query_parser.add_argument(
@@ -82,16 +87,18 @@ def connect(server_address: str, timeout: float):
     return channel, stub, connect_ms
 
 
-def run_ping(stub, timeout: float):
+def run_ping(stub, args):
+    request = build_ping_request(args)
+
+    print("Ping request: ")
+    print(f"   request_id = {request.request_id}")
+
     start_ping = time.perf_counter()
-    response = stub.Ping(Empty(), timeout=timeout)
+    response = stub.Ping(request, timeout=args.timeout)
     ping_ms = (time.perf_counter() - start_ping) * 1000
 
-    print("ping result:")
-    print("   status = success")
-    print(f"   ping_rtt_ms = {ping_ms:.2f}")
-
-    dir(response)
+    print_ping_response("ping", response, ping_ms)
+    # dir(response)
 
 
 def build_query_request(args):
@@ -115,6 +122,10 @@ def build_query_request(args):
 
     return request
 
+def build_ping_request(args):
+    request = mini2_pb2.PingRequest()
+    request.request_id = args.request_id or f"client-ping-{uuid.uuid4().hex[:8]}"
+    return request
 
 def print_query_request(request):
     print("query request:")
@@ -135,13 +146,21 @@ def print_query_request(request):
         print(f"   lon_max = {request.lon_max}")
 
 
-def print_query_response(label: str, response, elapsed_ms: float):
+def print_query_response(label, response, elapsed_ms):
     print(f"{label} response:")
     print(f"   response_request_id = {response.request_id}")
     print(f"   from_node = {response.from_node}")
     print(f"   records_returned = {len(response.records)}")
     print(f"   {label}_rtt_ms = {elapsed_ms:.2f}")
 
+
+def print_ping_response(label, response, elapsed_ms):
+    print(f"{label} response:")
+    print(f"   response_request_id = {response.request_id}")
+    print("   active nodes: ", end="")
+    for node in response.active_nodes:
+        print(f"{node} ", end="")
+    print(f"\n   {label}_rtt_ms = {elapsed_ms:.2f}")
 
 def run_query(stub, args):
     request = build_query_request(args)
@@ -179,7 +198,7 @@ def run():
         print(f"   connect_time_ms = {connect_ms:.2f}")
 
         if args.command == "ping":
-            run_ping(stub, args.timeout)
+            run_ping(stub, args)
         elif args.command == "query":
             run_query(stub, args)
         elif args.command == "forward":
