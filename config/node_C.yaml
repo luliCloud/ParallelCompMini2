@@ -1,4 +1,5 @@
 node_id:      "C"
 host:         "0.0.0.0"
 port:         50053
+dataset_path: "benchmarks/workload_100k_time_shards_6/workload_100k_shard_02.csv"
 peers:        []
