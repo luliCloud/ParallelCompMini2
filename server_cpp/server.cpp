@@ -126,3 +126,5 @@ int main(int argc, char** argv) {
     RunServer(node_id);
     return 0;
 }
+
+// Run command: ./build/bin/server A benchmarks/workload_100k.csv
