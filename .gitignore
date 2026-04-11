@@ -70,3 +70,4 @@ server*.log
 
 # Util files
 /benchmarks/generate_workload.py
+logs/
