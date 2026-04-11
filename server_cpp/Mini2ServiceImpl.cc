@@ -197,7 +197,7 @@ Status Mini2ServiceImpl::Forward(ServerContext* context, const QueryRequest* req
     }
 
     // Perform parallel forwarding search request to peers when result is not found in the local memory
-    if (local_matched == 0 && !connected_peers_.empty()) {
+    if (!connected_peers_.empty()) {
         std::vector<std::future<QueryResponse>> futures;
 
         for (const auto& peer : connected_peers_) {
