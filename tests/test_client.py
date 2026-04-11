@@ -16,7 +16,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "client_py"))
 try:
     import mini2_pb2
     import mini2_pb2_grpc
-    from google.protobuf.empty_pb2 import Empty
 except ImportError as e:
     print(f"Error: Proto files not generated. Run build first.")
     print(f"Details: {e}")
@@ -24,9 +23,10 @@ except ImportError as e:
 
 
 class Mini2TestClient:
-    def __init__(self, server_address="localhost:50051", timeout=5):
+    def __init__(self, server_address="localhost:50051", timeout=5, expected_nodes=None):
         self.server_address = server_address
         self.timeout = timeout
+        self.expected_nodes = set(expected_nodes or [])
         self.channel = None
         self.stub = None
         self.passed = 0
@@ -44,14 +44,14 @@ class Mini2TestClient:
                 # Try a simple call to verify connection
                 self.stub = mini2_pb2_grpc.NodeServiceStub(self.channel)
                 grpc.channel_ready_future(self.channel).result(timeout=1)
-                print(f"✓ Connected to {self.server_address}")
+                print(f"Connected to server: {self.server_address}")
                 return True
             except Exception as e:
                 if attempt < max_retries - 1:
-                    print(f"  Retry {attempt + 1}/{max_retries}: Waiting for server...")
+                    print(f"Retry {attempt + 1}/{max_retries}: waiting for server...")
                     time.sleep(retry_delay)
                 else:
-                    print(f"✗ Failed to connect: {e}")
+                    print(f"Failed to connect: {e}")
                     return False
         return False
 
@@ -66,15 +66,15 @@ class Mini2TestClient:
         try:
             test_func()
             self.passed += 1
-            print(f"✓ {name}: PASSED")
+            print(f"PASS: {name}")
             return True
         except AssertionError as e:
             self.failed += 1
-            print(f"✗ {name}: FAILED - {e}")
+            print(f"FAIL: {name} - {e}")
             return False
         except Exception as e:
             self.failed += 1
-            print(f"✗ {name}: ERROR - {e}")
+            print(f"ERROR: {name} - {e}")
             return False
 
     # ====================================================================
@@ -86,10 +86,28 @@ class Mini2TestClient:
         print("\n[TEST 1] Ping Request")
         
         def run_test():
-            response = self.stub.Ping(Empty(), timeout=self.timeout)
+            request = mini2_pb2.PingRequest()
+            request.request_id = "test_ping_001"
+
+            response = self.stub.Ping(request, timeout=self.timeout)
             assert response is not None, "Response is None"
-            print("  Request: Empty()")
-            print("  Response: OK")
+            assert response.request_id == request.request_id, "Request ID mismatch"
+
+            active_nodes = list(response.active_nodes)
+            active_node_set = set(active_nodes)
+            assert active_nodes, "active_nodes is empty"
+            assert len(active_nodes) == len(active_node_set), (
+                f"Duplicate nodes in ping response: {active_nodes}"
+            )
+
+            if self.expected_nodes:
+                missing = sorted(self.expected_nodes - active_node_set)
+                unexpected = sorted(active_node_set - self.expected_nodes)
+                assert not missing, f"Missing nodes in ping response: {missing}"
+                assert not unexpected, f"Unexpected nodes in ping response: {unexpected}"
+
+            print(f"  Request ID: {request.request_id}")
+            print(f"  Active nodes: {', '.join(sorted(active_node_set))}")
 
         self.test("Ping", run_test)
 
@@ -156,8 +174,8 @@ class Mini2TestClient:
         self.test("Query (agency)", run_test)
 
     def test_query_geographic(self):
-        """Test Query with geographic filter"""
-        print("\n[TEST 5] Query Request (geographic filter)")
+        """Test Query with latitude/longitude filter"""
+        print("\n[TEST 5] Query Request (latitude/longitude filter)")
         
         def run_test():
             request = mini2_pb2.QueryRequest()
@@ -173,12 +191,12 @@ class Mini2TestClient:
             assert response.request_id == "test_query_geo_001", "Request ID mismatch"
             
             print(f"  Request ID: {request.request_id}")
-            print(f"  Geographic bounds: lat=[{request.lat_min}, {request.lat_max}], "
-                  f"lon=[{request.lon_min}, {request.lon_max}]")
+            print(f"  Latitude filter:  [{request.lat_min}, {request.lat_max}]")
+            print(f"  Longitude filter: [{request.lon_min}, {request.lon_max}]")
             print(f"  Response from node: {response.from_node}")
             print(f"  Records returned: {len(response.records)}")
 
-        self.test("Query (geographic)", run_test)
+        self.test("Query (latitude/longitude)", run_test)
 
     def test_forward(self):
         """Test Forward RPC"""
@@ -202,9 +220,7 @@ class Mini2TestClient:
 
     def run_all_tests(self):
         """Run all test cases"""
-        print("=" * 60)
         print("Mini2 gRPC Server - E2E Test Suite")
-        print("=" * 60)
 
         if not self.connect():
             print("\nCannot proceed without server connection.")
@@ -221,18 +237,17 @@ class Mini2TestClient:
             self.close()
 
         # Print summary
-        print("\n" + "=" * 60)
+        print("")
         print("Test Summary")
-        print("=" * 60)
         print(f"Total:  {self.total}")
-        print(f"Passed: {self.passed} ✓")
-        print(f"Failed: {self.failed} ✗")
+        print(f"Passed: {self.passed}")
+        print(f"Failed: {self.failed}")
         
         if self.failed == 0:
-            print("\n🎉 All tests passed!")
+            print("\nResult: all tests passed.")
             return True
         else:
-            print(f"\n⚠️  {self.failed} test(s) failed.")
+            print(f"\nResult: {self.failed} test(s) failed.")
             return False
 
 
@@ -251,10 +266,19 @@ def main():
         default=5,
         help="Request timeout in seconds (default: 5)"
     )
+    parser.add_argument(
+        "--expected-nodes",
+        default="A,B,C,D,E,F,G,H,I",
+        help="Comma-separated list of nodes expected in Ping response "
+             "(default: A,B,C,D,E,F,G,H,I)"
+    )
 
     args = parser.parse_args()
 
-    client = Mini2TestClient(args.server, args.timeout)
+    expected_nodes = [
+        node.strip() for node in args.expected_nodes.split(",") if node.strip()
+    ]
+    client = Mini2TestClient(args.server, args.timeout, expected_nodes)
     success = client.run_all_tests()
 
     sys.exit(0 if success else 1)
