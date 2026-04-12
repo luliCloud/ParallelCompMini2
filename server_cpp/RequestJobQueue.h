@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -23,9 +22,6 @@ public:
     RequestJobQueue(std::string node_id, JobProcessor processor);
     ~RequestJobQueue();
 
-    RequestJobQueue(const RequestJobQueue&) = delete;
-    RequestJobQueue& operator=(const RequestJobQueue&) = delete;
-
     QueryResponse EnqueueAndWait(JobType type, const QueryRequest& request);
 
 private:
@@ -33,7 +29,6 @@ private:
         JobType type;
         QueryRequest request;
         std::promise<QueryResponse> promise;
-        std::chrono::steady_clock::time_point enqueue_time;
     };
 
     void WorkerLoop();
