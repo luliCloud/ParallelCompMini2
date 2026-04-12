@@ -2,8 +2,11 @@
 
 #include <string>
 #include <vector>
+
 #include <grpcpp/server_context.h>
+
 #include "mini2.grpc.pb.h"
+#include "RequestJobQueue.h"
 #include "dataset.hpp"
 
 using grpc::ServerContext;
@@ -29,7 +32,7 @@ struct ConnectedPeer {
 class Mini2ServiceImpl final : public NodeService::Service {
 public:
     explicit Mini2ServiceImpl(const std::string& node_id, uint16_t port);
-    ~Mini2ServiceImpl() = default;
+    ~Mini2ServiceImpl() override;
 
     // Initialization
     bool Initialize(const std::string& dataset_path);
@@ -40,15 +43,23 @@ public:
     Status Ping(ServerContext* context, const PingRequest* request,
                 PingResponse* response) override;
 
-    Status Query(ServerContext* context, const QueryRequest* request, 
+    Status Query(ServerContext* context, const QueryRequest* request,
                  QueryResponse* response) override;
 
-    Status Forward(ServerContext* context, const QueryRequest* request, 
+    Status Forward(ServerContext* context, const QueryRequest* request,
                    QueryResponse* response) override;
 
 private:
+    // Execute local search for a Query job.
+    QueryResponse ProcessQueryJob(const QueryRequest& request);
+    // Execute local search + peer forwarding for a Forward job.
+    QueryResponse ProcessForwardJob(const QueryRequest& request);
+    // Dispatch a queued request to the right local processor.
+    QueryResponse ProcessJob(JobType type, const QueryRequest& request);
+
     std::string node_id_;
     uint16_t port_;
     Dataset dataset_;
     std::vector<ConnectedPeer> connected_peers_;
+    RequestJobQueue job_queue_;
 };
