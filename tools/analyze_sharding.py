@@ -1,35 +1,35 @@
 #!/usr/bin/env python3
 """Analyze created-date and borough skewness for sharding decisions.
 
-This script reads the NYC 311 CSV used by Mini2 and reports:
-1. Time-range skewness for the first shard key (`Created Date`)
-2. Borough skewness for the second shard key (`Borough` / encoded `borough_id`)
-3. Suggested shard layouts for a given number of nodes
-
-The borough_id encoding matches the server's current behavior: first-seen value
-gets id 0, next unseen value gets id 1, and so on.
+This version is streaming-friendly and can handle the full NYC 311 CSV.
+It aggregates by day for time analysis, which is enough for shard planning
+without storing every row in memory.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import math
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, time
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 
 DATE_FORMAT = "%m/%d/%Y %I:%M:%S %p"
 
 
 @dataclass(frozen=True)
-class Row:
-    created_ts: int
-    borough_name: str
-    borough_id: int
+class DatasetStats:
+    total_rows: int
+    invalid_dates: int
+    min_ts: int
+    max_ts: int
+    day_counts: Dict[int, int]
+    day_borough_counts: Dict[Tuple[int, int], int]
+    borough_counts: Dict[int, int]
+    borough_id_to_name: Dict[int, str]
 
 
 @dataclass(frozen=True)
@@ -49,10 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Analyze skewness and suggest sharding layouts for Mini2 CSV data."
     )
-    parser.add_argument(
-        "csv_path",
-        help="Path to the input CSV file (for example benchmarks/workload_100k.csv).",
-    )
+    parser.add_argument("csv_path", help="Path to the input CSV file.")
     parser.add_argument(
         "--nodes",
         type=int,
@@ -63,48 +60,48 @@ def parse_args() -> argparse.Namespace:
         "--time-bins",
         type=int,
         default=None,
-        help="Number of equal-width time bins for skewness reporting. Default: min(12, max(4, nodes)).",
+        help="Number of equal-width bins for reporting. Default: min(12, max(4, nodes)).",
     )
     return parser.parse_args()
 
 
-def parse_datetime(value: str) -> Optional[int]:
+def parse_datetime(value: str) -> Optional[Tuple[int, int]]:
     value = value.strip()
     if not value:
         return None
     try:
-        return int(datetime.strptime(value, DATE_FORMAT).timestamp())
-    except ValueError:
+        month = int(value[0:2])
+        day = int(value[3:5])
+        year = int(value[6:10])
+        hour = int(value[11:13])
+        minute = int(value[14:16])
+        second = int(value[17:19])
+        suffix = value[20:22]
+
+        if suffix == "AM":
+            hour = 0 if hour == 12 else hour
+        elif suffix == "PM":
+            hour = 12 if hour == 12 else hour + 12
+        else:
+            return None
+
+        current_date = date(year, month, day)
+        current_dt = datetime(year, month, day, hour, minute, second)
+        return current_date.toordinal(), int(current_dt.timestamp())
+    except (ValueError, IndexError):
         return None
-
-
-def load_rows(csv_path: Path) -> Tuple[List[Row], Dict[int, str], int]:
-    rows: List[Row] = []
-    borough_name_to_id: Dict[str, int] = {}
-    borough_id_to_name: Dict[int, str] = {}
-    invalid_dates = 0
-
-    with csv_path.open("r", newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        for raw in reader:
-            created_ts = parse_datetime(raw.get("Created Date", ""))
-            if created_ts is None:
-                invalid_dates += 1
-                continue
-
-            borough_name = (raw.get("Borough", "") or "").strip() or "<EMPTY>"
-            if borough_name not in borough_name_to_id:
-                borough_id = len(borough_name_to_id)
-                borough_name_to_id[borough_name] = borough_id
-                borough_id_to_name[borough_id] = borough_name
-            borough_id = borough_name_to_id[borough_name]
-            rows.append(Row(created_ts=created_ts, borough_name=borough_name, borough_id=borough_id))
-
-    return rows, borough_id_to_name, invalid_dates
 
 
 def fmt_ts(ts: int) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def day_start_ts(day_ordinal: int) -> int:
+    return int(datetime.combine(datetime.fromordinal(day_ordinal).date(), time.min).timestamp())
+
+
+def day_end_ts(day_ordinal: int) -> int:
+    return int(datetime.combine(datetime.fromordinal(day_ordinal).date(), time.max).timestamp())
 
 
 def gini(values: Sequence[int]) -> float:
@@ -149,43 +146,118 @@ def summarize_distribution(values: Sequence[int]) -> str:
     )
 
 
-def equal_width_time_bins(rows: Sequence[Row], num_bins: int) -> List[Tuple[str, int]]:
-    if not rows:
-        return []
+def load_stats(csv_path: Path) -> DatasetStats:
+    day_counts: Counter[int] = Counter()
+    day_borough_counts: Counter[Tuple[int, int]] = Counter()
+    borough_counts: Counter[int] = Counter()
+    borough_name_to_id: Dict[str, int] = {}
+    borough_id_to_name: Dict[int, str] = {}
+    total_rows = 0
+    invalid_dates = 0
+    min_ts: Optional[int] = None
+    max_ts: Optional[int] = None
 
-    min_ts = min(row.created_ts for row in rows)
-    max_ts = max(row.created_ts for row in rows)
-    if min_ts == max_ts:
-        return [(f"{fmt_ts(min_ts)} -> {fmt_ts(max_ts)}", len(rows))]
+    with csv_path.open("r", encoding="utf-8", newline="") as handle:
+        header_line = handle.readline()
+        if not header_line:
+            raise ValueError("CSV file is empty.")
 
-    width = max(1, math.ceil((max_ts - min_ts + 1) / num_bins))
+        header_fields = header_line.rstrip("\n").split('","')
+        header_fields[0] = header_fields[0].lstrip('"')
+        header_fields[-1] = header_fields[-1].rstrip('"\r')
+
+        try:
+            created_idx = header_fields.index("Created Date")
+            borough_idx = header_fields.index("Borough")
+        except ValueError as exc:
+            raise ValueError("Required columns not found in CSV header.") from exc
+
+        for line in handle:
+            parts = line.rstrip("\n").split('","')
+            if len(parts) <= max(created_idx, borough_idx):
+                invalid_dates += 1
+                continue
+
+            parts[0] = parts[0].lstrip('"')
+            parts[-1] = parts[-1].rstrip('"\r')
+
+            parsed = parse_datetime(parts[created_idx])
+            if parsed is None:
+                invalid_dates += 1
+                continue
+
+            day_ordinal, created_ts = parsed
+            total_rows += 1
+            day_counts[day_ordinal] += 1
+
+            borough_name = (parts[borough_idx] or "").strip() or "<EMPTY>"
+            if borough_name not in borough_name_to_id:
+                borough_id = len(borough_name_to_id)
+                borough_name_to_id[borough_name] = borough_id
+                borough_id_to_name[borough_id] = borough_name
+            borough_id = borough_name_to_id[borough_name]
+            borough_counts[borough_id] += 1
+            day_borough_counts[(day_ordinal, borough_id)] += 1
+
+            min_ts = created_ts if min_ts is None else min(min_ts, created_ts)
+            max_ts = created_ts if max_ts is None else max(max_ts, created_ts)
+
+    if total_rows == 0 or min_ts is None or max_ts is None:
+        raise ValueError("No valid rows found after parsing Created Date.")
+
+    return DatasetStats(
+        total_rows=total_rows,
+        invalid_dates=invalid_dates,
+        min_ts=min_ts,
+        max_ts=max_ts,
+        day_counts=dict(day_counts),
+        day_borough_counts=dict(day_borough_counts),
+        borough_counts=dict(borough_counts),
+        borough_id_to_name=borough_id_to_name,
+    )
+
+
+def equal_width_time_bins(stats: DatasetStats, num_bins: int) -> List[Tuple[str, int]]:
+    if stats.min_ts == stats.max_ts:
+        return [(f"{fmt_ts(stats.min_ts)} -> {fmt_ts(stats.max_ts)}", stats.total_rows)]
+
+    width = max(1, math.ceil((stats.max_ts - stats.min_ts + 1) / num_bins))
     counts = [0 for _ in range(num_bins)]
 
-    for row in rows:
-        idx = min((row.created_ts - min_ts) // width, num_bins - 1)
-        counts[idx] += 1
+    for day_ordinal, day_count in stats.day_counts.items():
+        day_ts = day_start_ts(day_ordinal)
+        idx = min((day_ts - stats.min_ts) // width, num_bins - 1)
+        counts[idx] += day_count
 
     bins: List[Tuple[str, int]] = []
     for idx, count in enumerate(counts):
-        start = min_ts + idx * width
-        end = min(max_ts, start + width - 1)
+        start = stats.min_ts + idx * width
+        end = min(stats.max_ts, start + width - 1)
         bins.append((f"{fmt_ts(start)} -> {fmt_ts(end)}", count))
     return bins
 
 
-def quantile_boundaries(sorted_timestamps: Sequence[int], partitions: int) -> Tuple[int, ...]:
+def quantile_boundaries(day_counts: Dict[int, int], partitions: int) -> Tuple[int, ...]:
     if partitions <= 1:
         return tuple()
+
+    total = sum(day_counts.values())
+    targets = [math.ceil(i * total / partitions) for i in range(1, partitions)]
     boundaries: List[int] = []
-    n = len(sorted_timestamps)
-    for i in range(1, partitions):
-        pos = math.ceil(i * n / partitions) - 1
-        pos = max(0, min(pos, n - 1))
-        boundaries.append(sorted_timestamps[pos])
+    cumulative = 0
+    target_idx = 0
+
+    for day_ordinal in sorted(day_counts):
+        cumulative += day_counts[day_ordinal]
+        while target_idx < len(targets) and cumulative >= targets[target_idx]:
+            boundaries.append(day_end_ts(day_ordinal))
+            target_idx += 1
+
     return tuple(boundaries)
 
 
-def assign_time_bucket(ts: int, boundaries: Sequence[int]) -> int:
+def assign_time_bucket_for_day(day_ordinal: int, boundaries: Sequence[int]) -> int:
+    ts = day_end_ts(day_ordinal)
     for idx, boundary in enumerate(boundaries):
         if ts <= boundary:
             return idx
@@ -204,46 +276,6 @@ def greedy_group_counts(counts_by_id: Dict[int, int], groups: int) -> Tuple[Tupl
     return tuple(tuple(sorted(bucket)) for bucket in buckets)
 
 
-def evaluate_plan(rows: Sequence[Row], nodes: int, borough_ids: Iterable[int]) -> List[ShardPlan]:
-    borough_ids = list(borough_ids)
-    borough_count = len(borough_ids)
-    time_sorted = sorted(row.created_ts for row in rows)
-    borough_totals = Counter(row.borough_id for row in rows)
-
-    plans: List[ShardPlan] = []
-    for time_shards in range(1, nodes + 1):
-        if nodes % time_shards != 0:
-            continue
-        borough_groups = nodes // time_shards
-        if borough_groups > borough_count:
-            continue
-
-        boundaries = quantile_boundaries(time_sorted, time_shards)
-        borough_group_members = greedy_group_counts(borough_totals, borough_groups)
-        borough_to_group: Dict[int, int] = {}
-        for group_idx, members in enumerate(borough_group_members):
-            for borough_id in members:
-                borough_to_group[borough_id] = group_idx
-
-        shard_counts = [0 for _ in range(nodes)]
-        for row in rows:
-            time_idx = assign_time_bucket(row.created_ts, boundaries)
-            borough_idx = borough_to_group[row.borough_id]
-            shard_idx = time_idx * borough_groups + borough_idx
-            shard_counts[shard_idx] += 1
-
-        plans.append(
-            ShardPlan(
-                time_shards=time_shards,
-                borough_groups=borough_groups,
-                shard_counts=tuple(shard_counts),
-                time_boundaries=boundaries,
-                borough_group_members=borough_group_members,
-            )
-        )
-    return plans
-
-
 def best_plan(plans: Sequence[ShardPlan]) -> Optional[ShardPlan]:
     if not plans:
         return None
@@ -258,8 +290,8 @@ def best_plan(plans: Sequence[ShardPlan]) -> Optional[ShardPlan]:
     )
 
 
-def print_time_distribution(rows: Sequence[Row], num_bins: int) -> None:
-    bins = equal_width_time_bins(rows, num_bins)
+def print_time_distribution(stats: DatasetStats, num_bins: int) -> None:
+    bins = equal_width_time_bins(stats, num_bins)
     counts = [count for _, count in bins]
     print("Time-range skewness (equal-width bins)")
     print(f"  {summarize_distribution(counts)}")
@@ -267,13 +299,16 @@ def print_time_distribution(rows: Sequence[Row], num_bins: int) -> None:
         print(f"  {label}: {count}")
 
 
-def print_borough_distribution(rows: Sequence[Row], borough_id_to_name: Dict[int, str]) -> None:
-    borough_counts = Counter(row.borough_id for row in rows)
-    counts = [borough_counts[borough_id] for borough_id in sorted(borough_counts)]
+def print_borough_distribution(stats: DatasetStats) -> None:
+    counts = [stats.borough_counts[borough_id] for borough_id in sorted(stats.borough_counts)]
     print("Borough skewness (server-compatible borough_id encoding)")
     print(f"  {summarize_distribution(counts)}")
-    for borough_id in sorted(borough_counts):
-        print(f"  borough_id={borough_id} name={borough_id_to_name[borough_id]} count={borough_counts[borough_id]}")
+    for borough_id in sorted(stats.borough_counts):
+        print(
+            f"  borough_id={borough_id} "
+            f"name={stats.borough_id_to_name[borough_id]} "
+            f"count={stats.borough_counts[borough_id]}"
+        )
 
 
 def print_plan(plan: ShardPlan, borough_id_to_name: Dict[int, str]) -> None:
@@ -329,6 +364,44 @@ def print_other_plans(plans: Sequence[ShardPlan]) -> None:
         )
 
 
+def estimate_plans_with_cross_counts(stats: DatasetStats, nodes: int) -> List[ShardPlan]:
+    borough_ids = list(stats.borough_id_to_name.keys())
+    borough_count = len(borough_ids)
+    plans: List[ShardPlan] = []
+
+    for time_shards in range(1, nodes + 1):
+        if nodes % time_shards != 0:
+            continue
+        borough_groups = nodes // time_shards
+        if borough_groups > borough_count:
+            continue
+
+        boundaries = quantile_boundaries(stats.day_counts, time_shards)
+        borough_group_members = greedy_group_counts(stats.borough_counts, borough_groups)
+        borough_to_group: Dict[int, int] = {}
+        for group_idx, members in enumerate(borough_group_members):
+            for borough_id in members:
+                borough_to_group[borough_id] = group_idx
+
+        shard_counts = [0 for _ in range(nodes)]
+        for (day_ordinal, borough_id), count in stats.day_borough_counts.items():
+            time_idx = assign_time_bucket_for_day(day_ordinal, boundaries)
+            borough_idx = borough_to_group[borough_id]
+            shard_idx = time_idx * borough_groups + borough_idx
+            shard_counts[shard_idx] += count
+
+        plans.append(
+            ShardPlan(
+                time_shards=time_shards,
+                borough_groups=borough_groups,
+                shard_counts=tuple(shard_counts),
+                time_boundaries=boundaries,
+                borough_group_members=borough_group_members,
+            )
+        )
+    return plans
+
+
 def main() -> int:
     args = parse_args()
     csv_path = Path(args.csv_path)
@@ -339,36 +412,28 @@ def main() -> int:
         print("--nodes must be positive")
         return 1
 
-    rows, borough_id_to_name, invalid_dates = load_rows(csv_path)
-    if not rows:
-        print("No valid rows found after parsing Created Date.")
-        return 1
-
+    stats = load_stats(csv_path)
     time_bins = args.time_bins or min(12, max(4, args.nodes))
 
-    min_ts = min(row.created_ts for row in rows)
-    max_ts = max(row.created_ts for row in rows)
-    borough_counts = Counter(row.borough_id for row in rows)
-
     print(f"Dataset: {csv_path}")
-    print(f"Valid rows: {len(rows)}")
-    print(f"Skipped rows with invalid Created Date: {invalid_dates}")
-    print(f"Created Date range: {fmt_ts(min_ts)} -> {fmt_ts(max_ts)}")
-    print(f"Distinct borough ids: {len(borough_counts)}")
+    print(f"Valid rows: {stats.total_rows}")
+    print(f"Skipped rows with invalid Created Date: {stats.invalid_dates}")
+    print(f"Created Date range: {fmt_ts(stats.min_ts)} -> {fmt_ts(stats.max_ts)}")
+    print(f"Distinct borough ids: {len(stats.borough_counts)}")
     print("")
 
-    print_time_distribution(rows, time_bins)
+    print_time_distribution(stats, time_bins)
     print("")
-    print_borough_distribution(rows, borough_id_to_name)
+    print_borough_distribution(stats)
     print("")
 
-    plans = evaluate_plan(rows, args.nodes, borough_id_to_name.keys())
+    plans = estimate_plans_with_cross_counts(stats, args.nodes)
     chosen = best_plan(plans)
     if chosen is None:
         print(f"No exact layout found for {args.nodes} nodes.")
         return 1
 
-    print_plan(chosen, borough_id_to_name)
+    print_plan(chosen, stats.borough_id_to_name)
     print("")
     print_other_plans(plans)
     return 0
