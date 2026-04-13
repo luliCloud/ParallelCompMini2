@@ -16,12 +16,29 @@
  * 3. Store the Record in the records_ vector.
  * 4. Encode in dictionary for categorical columns (agency_id, problem_id, status_id, borough_id).
  */
-bool Dataset::load_csv(const std::string& path) {
+bool Dataset::load_csv(
+    const std::string& path,
+    const std::string& agency_dict_path,
+    const std::string& borough_dict_path) {
     records_.clear();
     agency_dict_.clear();
     problem_dict_.clear();
     status_dict_.clear();
     borough_dict_.clear();
+
+    const bool use_predefined_agency = !agency_dict_path.empty();
+    const bool use_predefined_borough = !borough_dict_path.empty();
+
+    if (use_predefined_agency &&
+        !dataset_utils::load_predefined_ids<uint16_t>(
+            agency_dict_path, agency_dict_, "Agency")) {
+        return false;
+    }
+    if (use_predefined_borough &&
+        !dataset_utils::load_predefined_ids<uint8_t>(
+            borough_dict_path, borough_dict_, "Borough")) {
+        return false;
+    }
 
     CSVParser parser(path); // already read the header in the constructor of CSVParser. getline will start from row 1 (the first data row).
     const auto& header = parser.header();
@@ -103,14 +120,16 @@ bool Dataset::load_csv(const std::string& path) {
 
         try {
             // encode_id<> : encode new {k, v} into dict
-            record.agency_id = dataset_utils::encode_id<uint16_t>(agency_dict_, row[idx_agency]);
+            record.agency_id = dataset_utils::lookup_or_encode_id<uint16_t>(
+                agency_dict_, row[idx_agency], use_predefined_agency, "Agency");
             record.problem_id = dataset_utils::encode_id<uint32_t>(problem_dict_, row[idx_problem]);
             record.status_id = dataset_utils::encode_id<uint8_t>(status_dict_, row[idx_status]);
-            record.borough_id = dataset_utils::encode_id<uint8_t>(borough_dict_, row[idx_borough]);
+            record.borough_id = dataset_utils::lookup_or_encode_id<uint8_t>(
+                borough_dict_, row[idx_borough], use_predefined_borough, "Borough");
         } catch (const std::runtime_error& e) {
             // Roll back any values introduced by this row so dictionaries stay
             // consistent with records_ when we skip malformed rows.
-            if (!agency_existed) { // agency_existed == false: no dict entry for this idx existed before. 
+            if (!use_predefined_agency && !agency_existed) { // agency_existed == false: no dict entry for this idx existed before. 
                 agency_dict_.erase(row[idx_agency]);
             }
             if (!problem_existed) {
@@ -119,7 +138,7 @@ bool Dataset::load_csv(const std::string& path) {
             if (!status_existed) {
                 status_dict_.erase(row[idx_status]);
             }
-            if (!borough_existed) {
+            if (!use_predefined_borough && !borough_existed) {
                 borough_dict_.erase(row[idx_borough]);
             }
             std::cerr << "Encoding error at line " << line_num << ": " << e.what()

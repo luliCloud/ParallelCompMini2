@@ -12,7 +12,10 @@ public:
     DatasetSOA() = default;
     ~DatasetSOA() = default;
 
-    bool load_csv(const std::string& path);
+    bool load_csv(
+        const std::string& path,
+        const std::string& agency_dict_path = "",
+        const std::string& borough_dict_path = "");
     std::size_t size() const { return created_date_.size(); }
 
     // getter

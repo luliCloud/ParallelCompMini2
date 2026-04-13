@@ -58,9 +58,12 @@ void AppendRecord(const Record& record, QueryResponse* response) {
 Mini2ServiceImpl::Mini2ServiceImpl(const std::string& node_id, uint16_t port)
     : node_id_(node_id), port_(port) {}
 
-bool Mini2ServiceImpl::Initialize(const std::string& dataset_path) {
+bool Mini2ServiceImpl::Initialize(
+    const std::string& dataset_path,
+    const std::string& agency_dict_path,
+    const std::string& borough_dict_path) {
     try {
-        if (!dataset_.load_csv(dataset_path)) {
+        if (!dataset_.load_csv(dataset_path, agency_dict_path, borough_dict_path)) {
             std::cerr << "Failed to load dataset from " << dataset_path 
                       << " at node: " << node_id_ << std::endl;
             return false;

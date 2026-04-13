@@ -52,6 +52,32 @@ fs::path ResolveDatasetPath(const YAML::Node& config, const fs::path& config_pat
     return config_path.parent_path() / configured;
 }
 
+std::string ResolveOptionalPath(
+    const YAML::Node& config,
+    const char* key,
+    const fs::path& config_path) {
+    if (!config[key]) {
+        return "";
+    }
+
+    const fs::path configured = config[key].as<std::string>();
+    if (configured.is_absolute()) {
+        return configured.string();
+    }
+
+    const fs::path from_cwd = fs::current_path() / configured;
+    if (fs::exists(from_cwd)) {
+        return from_cwd.string();
+    }
+
+    const fs::path from_source_dir = fs::path(MINI2_SOURCE_DIR) / configured;
+    if (fs::exists(from_source_dir)) {
+        return from_source_dir.string();
+    }
+
+    return (config_path.parent_path() / configured).string();
+}
+
 }  // namespace
 
 // ===== Server Startup =====
@@ -85,7 +111,15 @@ void RunServer(const std::string& node_id)
         // Initialize dataset
         if (!coordinator_only) {
             const fs::path dataset_path = ResolveDatasetPath(config, config_path);
-            if (!service.Initialize(dataset_path.string())) {
+            const std::string agency_dict_path =
+                ResolveOptionalPath(config, "agency_dict_path", config_path);
+            const std::string borough_dict_path =
+                ResolveOptionalPath(config, "borough_dict_path", config_path);
+
+            if (!service.Initialize(
+                    dataset_path.string(),
+                    agency_dict_path,
+                    borough_dict_path)) {
                 std::cerr << "Failed to initialize dataset at node: " << node_id << std::endl;
                 return;
             }
