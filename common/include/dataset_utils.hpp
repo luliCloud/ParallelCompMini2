@@ -2,6 +2,7 @@
 
 #include <charconv> // for std::from_chars. Convert string to numeric types with error handling. 
 #include <cstdint>
+#include <fstream>
 #include <iostream>
 #include <ctime>
 #include <iomanip>
@@ -17,6 +18,22 @@
 #include <cstdlib> // for std::strtof to parse float with error handling.
 
 namespace dataset_utils {
+    inline std::string trim_copy(const std::string& input) {
+        const auto begin = input.find_first_not_of(" \t\r\n");
+        if (begin == std::string::npos) {
+            return "";
+        }
+        const auto end = input.find_last_not_of(" \t\r\n");
+        return input.substr(begin, end - begin + 1);
+    }
+
+    inline std::string unquote_copy(const std::string& input) {
+        if (input.size() >= 2 && input.front() == '"' && input.back() == '"') {
+            return input.substr(1, input.size() - 2);
+        }
+        return input;
+    }
+
     /* using filed name as key to find column index */ 
     inline int find_column_idx(const std::vector<std::string>& header, const std::string& name) {
         for (size_t i = 0; i < header.size(); ++i) {
@@ -107,5 +124,74 @@ namespace dataset_utils {
         UInt id = static_cast<UInt>(dict.size()); // run-time determine 
         dict.emplace(key, id);
         return id;
+    }
+
+    template <typename UInt, typename Dict>
+    inline bool load_predefined_ids(const std::string& path, Dict& dict, const std::string& label) {
+        std::ifstream input(path);
+        if (!input.is_open()) {
+            std::cerr << "Failed to open predefined " << label
+                      << " dictionary: " << path << std::endl;
+            return false;
+        }
+
+        std::string line;
+        int line_num = 0;
+        while (std::getline(input, line)) {
+            line_num++;
+            const std::string trimmed = trim_copy(line);
+            if (trimmed.empty()) {
+                continue;
+            }
+            if (line_num == 1 && trimmed == "id,value") {
+                continue;
+            }
+
+            const std::size_t comma = trimmed.find(',');
+            if (comma == std::string::npos) {
+                std::cerr << "Malformed dictionary entry at line " << line_num
+                          << " in " << path << std::endl;
+                return false;
+            }
+
+            const std::string id_str = trim_copy(trimmed.substr(0, comma));
+            const std::string raw_value = trim_copy(trimmed.substr(comma + 1));
+            const std::string value = unquote_copy(raw_value);
+
+            uint32_t parsed_id = 0;
+            if (!parse_uint32(id_str, parsed_id) ||
+                parsed_id > static_cast<uint32_t>(std::numeric_limits<UInt>::max())) {
+                std::cerr << "Invalid predefined id at line " << line_num
+                          << " in " << path << std::endl;
+                return false;
+            }
+
+            const auto [_, inserted] = dict.emplace(value, static_cast<UInt>(parsed_id));
+            if (!inserted) {
+                std::cerr << "Duplicate predefined value '" << value
+                          << "' in " << path << std::endl;
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    template <typename UInt, typename Dict>
+    inline UInt lookup_or_encode_id(
+        Dict& dict,
+        const std::string& key,
+        bool use_predefined_mapping,
+        const std::string& label) {
+        if (!use_predefined_mapping) {
+            return encode_id<UInt>(dict, key);
+        }
+
+        auto it = dict.find(key);
+        if (it == dict.end()) {
+            throw std::runtime_error(
+                "Missing predefined " + label + " mapping for value: " + key);
+        }
+        return static_cast<UInt>(it->second);
     }
 } // namespace ends here

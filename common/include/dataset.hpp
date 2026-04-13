@@ -32,7 +32,10 @@ public:
     Dataset() = default;
     ~Dataset() = default;
 
-    bool load_csv(const std::string& path); // call CSV parser and populate records_
+    bool load_csv(
+        const std::string& path,
+        const std::string& agency_dict_path = "",
+        const std::string& borough_dict_path = ""); // call CSV parser and populate records_
     size_t size() const { return records_.size(); }
 
     const std::vector<Record>& get_records() const { return records_; }

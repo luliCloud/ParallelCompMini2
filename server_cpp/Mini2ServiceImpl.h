@@ -32,7 +32,10 @@ public:
     ~Mini2ServiceImpl() = default;
 
     // Initialization
-    bool Initialize(const std::string& dataset_path);
+    bool Initialize(
+        const std::string& dataset_path,
+        const std::string& agency_dict_path = "",
+        const std::string& borough_dict_path = "");
     // Set peer and set up connection
     void SetPeers(const std::vector<PeerInfo>& peers);
 

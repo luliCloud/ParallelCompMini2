@@ -9,7 +9,10 @@
 #include <string>
 #include <vector>
 
-bool DatasetSOA::load_csv(const std::string& path) {
+bool DatasetSOA::load_csv(
+    const std::string& path,
+    const std::string& agency_dict_path,
+    const std::string& borough_dict_path) {
     id_.clear();
     created_date_.clear();
     closed_date_.clear();
@@ -25,6 +28,20 @@ bool DatasetSOA::load_csv(const std::string& path) {
     problem_dict_.clear();
     status_dict_.clear();
     borough_dict_.clear();
+
+    const bool use_predefined_agency = !agency_dict_path.empty();
+    const bool use_predefined_borough = !borough_dict_path.empty();
+
+    if (use_predefined_agency &&
+        !dataset_utils::load_predefined_ids<uint16_t>(
+            agency_dict_path, agency_dict_, "Agency")) {
+        return false;
+    }
+    if (use_predefined_borough &&
+        !dataset_utils::load_predefined_ids<uint8_t>(
+            borough_dict_path, borough_dict_, "Borough")) {
+        return false;
+    }
 
     CSVParser parser(path);
     const auto& header = parser.header();
@@ -138,16 +155,16 @@ bool DatasetSOA::load_csv(const std::string& path) {
         uint8_t parsed_borough_id = 0;
 
         try {
-            parsed_agency_id =
-                dataset_utils::encode_id<uint16_t>(agency_dict_, agency_value);
+            parsed_agency_id = dataset_utils::lookup_or_encode_id<uint16_t>(
+                agency_dict_, agency_value, use_predefined_agency, "Agency");
             parsed_problem_id =
                 dataset_utils::encode_id<uint32_t>(problem_dict_, problem_value);
             parsed_status_id =
                 dataset_utils::encode_id<uint8_t>(status_dict_, status_value);
-            parsed_borough_id =
-                dataset_utils::encode_id<uint8_t>(borough_dict_, borough_value);
+            parsed_borough_id = dataset_utils::lookup_or_encode_id<uint8_t>(
+                borough_dict_, borough_value, use_predefined_borough, "Borough");
         } catch (const std::runtime_error& e) {
-            if (!agency_existed) {
+            if (!use_predefined_agency && !agency_existed) {
                 agency_dict_.erase(agency_value);
             }
             if (!problem_existed) {
@@ -156,7 +173,7 @@ bool DatasetSOA::load_csv(const std::string& path) {
             if (!status_existed) {
                 status_dict_.erase(status_value);
             }
-            if (!borough_existed) {
+            if (!use_predefined_borough && !borough_existed) {
                 borough_dict_.erase(borough_value);
             }
 
