@@ -5,6 +5,7 @@
 
 #include <grpcpp/server_context.h>
 
+#include "ForwardResponseCache.h"
 #include "mini2.grpc.pb.h"
 #include "RequestJobQueue.h"
 #include "dataset.hpp"
@@ -43,7 +44,10 @@ struct ConnectedPeer {
 // Mini2 Node Service Implementation
 class Mini2ServiceImpl final : public NodeService::Service {
 public:
-    explicit Mini2ServiceImpl(const std::string& node_id, uint16_t port);
+    Mini2ServiceImpl(
+        const std::string& node_id,
+        uint16_t port,
+        bool enable_cache);
     ~Mini2ServiceImpl() override;
 
     // Initialization
@@ -88,4 +92,6 @@ private:
     std::vector<ConnectedPeer> connected_peers_;
     DatasetSOA dataset_soa_; // for SOA queries
     RequestJobQueue job_queue_;
+    // Cache is config-driven through enable_cache in each node YAML.
+    ForwardResponseCache forward_cache_;
 };

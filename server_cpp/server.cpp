@@ -92,9 +92,11 @@ void RunServer(const std::string& node_id)
         std::string host = config["host"].as<std::string>();
         uint16_t port = config["port"].as<uint16_t>();
         bool coordinator_only = config["coordinator_only"] && config["coordinator_only"].as<bool>();
+        // Cache policy is configured per node in YAML instead of hardcoding node A in C++.
+        bool enable_cache = config["enable_cache"] && config["enable_cache"].as<bool>();
 
         std::string server_address = host + ":" + std::to_string(port);
-        Mini2ServiceImpl service(node_id, port);
+        Mini2ServiceImpl service(node_id, port, enable_cache);
 
         if (config["peers"]) {
             std::vector<PeerInfo> peers;

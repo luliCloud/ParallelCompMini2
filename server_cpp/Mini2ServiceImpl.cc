@@ -77,12 +77,16 @@ LocalSearchResult CollectLocalMatches(const Dataset& dataset,
 }
 }  // namespace
 
-Mini2ServiceImpl::Mini2ServiceImpl(const std::string& node_id, uint16_t port)
+Mini2ServiceImpl::Mini2ServiceImpl(
+    const std::string& node_id,
+    uint16_t port,
+    bool enable_cache)
     : node_id_(node_id),
       port_(port),
       job_queue_(node_id, [this](JobType type, const QueryRequest& request) {
           return ProcessJob(type, request);
-      }) {}
+      }),
+      forward_cache_(node_id, enable_cache) {}
 
 Mini2ServiceImpl::~Mini2ServiceImpl() = default;
 
@@ -250,6 +254,10 @@ QueryResponse Mini2ServiceImpl::ProcessForwardJob(const QueryRequest& request) {
 
     const std::string request_id = request.request_id();
 
+    if (forward_cache_.TryGet(request, &response)) {
+        return response;
+    }
+
     std::cout << "[" << node_id_ << "] Forward local search started: "
               << request_id << std::endl;
     auto local_future = std::async(std::launch::async, [this, &request]() {
@@ -302,6 +310,8 @@ QueryResponse Mini2ServiceImpl::ProcessForwardJob(const QueryRequest& request) {
                   << request_id << " (peer_count=" << connected_peers_.size()
                   << ", peer_records=" << total_peer_record_count << ")" << std::endl;
     }
+
+    forward_cache_.Store(request, response);
 
     std::cout << "[" << node_id_ << "] Forward returning " << response.records_size()
               << " total records (Local matched: " << local_result.matched_record_count << ")" << std::endl;
