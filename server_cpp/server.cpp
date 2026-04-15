@@ -115,11 +115,14 @@ void RunServer(const std::string& node_id)
                 ResolveOptionalPath(config, "agency_dict_path", config_path);
             const std::string borough_dict_path =
                 ResolveOptionalPath(config, "borough_dict_path", config_path);
+            const std::string status_dict_path =
+                ResolveOptionalPath(config, "status_dict_path", config_path);
 
             if (!service.Initialize(
                     dataset_path.string(),
                     agency_dict_path,
-                    borough_dict_path)) {
+                    borough_dict_path,
+                    status_dict_path)) {
                 std::cerr << "Failed to initialize dataset at node: " << node_id << std::endl;
                 return;
             }

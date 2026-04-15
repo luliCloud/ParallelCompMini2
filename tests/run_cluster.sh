@@ -158,3 +158,7 @@ done
 # 2. query --request-id q-local. from_node = A, records_returnd = 0. Query only check local now. no forward. cause A has no data, return 0. 
 # 3. forward --agency-id 10 from_node = A, records_returned = 534. Request first goes to A, A forward to children nodes. Summing up at root node and return to client. This tests forward logic and aggregation logic.
 # 4. forward --lat-min 40.7 --lat-max 40.8 --lon-min -74.0 --lon-max -73.9 from_node = A, records_returned = 16010. Similar to #3 but with geo filter. Tests geo filtering logic.
+
+# up node C
+# change its config to load full dataset
+# ./build/bin/server C
