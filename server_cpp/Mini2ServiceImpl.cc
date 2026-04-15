@@ -61,9 +61,14 @@ Mini2ServiceImpl::Mini2ServiceImpl(const std::string& node_id, uint16_t port)
 bool Mini2ServiceImpl::Initialize(
     const std::string& dataset_path,
     const std::string& agency_dict_path,
-    const std::string& borough_dict_path) {
+    const std::string& borough_dict_path,
+    const std::string& status_dict_path) {
     try {
-        if (!dataset_.load_csv(dataset_path, agency_dict_path, borough_dict_path)) {
+        if (!dataset_.load_csv(
+                dataset_path,
+                agency_dict_path,
+                borough_dict_path,
+                status_dict_path)) {
             std::cerr << "Failed to load dataset from " << dataset_path 
                       << " at node: " << node_id_ << std::endl;
             return false;
@@ -71,7 +76,11 @@ bool Mini2ServiceImpl::Initialize(
         std::cout << "[" << node_id_ << "] Loaded " << dataset_.size()
                   << " records" << std::endl;
 
-        if (!dataset_soa_.load_csv(dataset_path, agency_dict_path, borough_dict_path)) {
+        if (!dataset_soa_.load_csv(
+                dataset_path,
+                agency_dict_path,
+                borough_dict_path,
+                status_dict_path)) {
             std::cerr << "Failed to load dataset for SOA from " << dataset_path 
                       << " at node: " << node_id_ << std::endl;
             return false;

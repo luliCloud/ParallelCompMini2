@@ -4,4 +4,5 @@ port:         50054
 dataset_path: "benchmarks/workload_100k_time_shards_6/workload_100k_shard_03.csv"
 agency_dict_path: "config/global_agency_ids.csv"
 borough_dict_path: "config/global_borough_ids.csv"
+status_dict_path: "config/global_status_ids.csv"
 peers:        []

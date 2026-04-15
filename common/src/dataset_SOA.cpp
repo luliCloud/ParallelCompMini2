@@ -12,7 +12,8 @@
 bool DatasetSOA::load_csv(
     const std::string& path,
     const std::string& agency_dict_path,
-    const std::string& borough_dict_path) {
+    const std::string& borough_dict_path,
+    const std::string& status_dict_path) {
     id_.clear();
     created_date_.clear();
     closed_date_.clear();
@@ -31,6 +32,7 @@ bool DatasetSOA::load_csv(
 
     const bool use_predefined_agency = !agency_dict_path.empty();
     const bool use_predefined_borough = !borough_dict_path.empty();
+    const bool use_predefined_status = !status_dict_path.empty();
 
     if (use_predefined_agency &&
         !dataset_utils::load_predefined_ids<uint16_t>(
@@ -40,6 +42,11 @@ bool DatasetSOA::load_csv(
     if (use_predefined_borough &&
         !dataset_utils::load_predefined_ids<uint8_t>(
             borough_dict_path, borough_dict_, "Borough")) {
+        return false;
+    }
+    if (use_predefined_status &&
+        !dataset_utils::load_predefined_ids<uint8_t>(
+            status_dict_path, status_dict_, "Status")) {
         return false;
     }
 
@@ -159,8 +166,8 @@ bool DatasetSOA::load_csv(
                 agency_dict_, agency_value, use_predefined_agency, "Agency");
             parsed_problem_id =
                 dataset_utils::encode_id<uint32_t>(problem_dict_, problem_value);
-            parsed_status_id =
-                dataset_utils::encode_id<uint8_t>(status_dict_, status_value);
+            parsed_status_id = dataset_utils::lookup_or_encode_id<uint8_t>(
+                status_dict_, status_value, use_predefined_status, "Status");
             parsed_borough_id = dataset_utils::lookup_or_encode_id<uint8_t>(
                 borough_dict_, borough_value, use_predefined_borough, "Borough");
         } catch (const std::runtime_error& e) {
@@ -170,7 +177,7 @@ bool DatasetSOA::load_csv(
             if (!problem_existed) {
                 problem_dict_.erase(problem_value);
             }
-            if (!status_existed) {
+            if (!use_predefined_status && !status_existed) {
                 status_dict_.erase(status_value);
             }
             if (!use_predefined_borough && !borough_existed) {

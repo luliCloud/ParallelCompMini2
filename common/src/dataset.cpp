@@ -19,7 +19,8 @@
 bool Dataset::load_csv(
     const std::string& path,
     const std::string& agency_dict_path,
-    const std::string& borough_dict_path) {
+    const std::string& borough_dict_path,
+    const std::string& status_dict_path) {
     records_.clear();
     agency_dict_.clear();
     problem_dict_.clear();
@@ -28,6 +29,7 @@ bool Dataset::load_csv(
 
     const bool use_predefined_agency = !agency_dict_path.empty();
     const bool use_predefined_borough = !borough_dict_path.empty();
+    const bool use_predefined_status = !status_dict_path.empty();
 
     if (use_predefined_agency &&
         !dataset_utils::load_predefined_ids<uint16_t>(
@@ -37,6 +39,11 @@ bool Dataset::load_csv(
     if (use_predefined_borough &&
         !dataset_utils::load_predefined_ids<uint8_t>(
             borough_dict_path, borough_dict_, "Borough")) {
+        return false;
+    }
+    if (use_predefined_status &&
+        !dataset_utils::load_predefined_ids<uint8_t>(
+            status_dict_path, status_dict_, "Status")) {
         return false;
     }
 
@@ -123,7 +130,8 @@ bool Dataset::load_csv(
             record.agency_id = dataset_utils::lookup_or_encode_id<uint16_t>(
                 agency_dict_, row[idx_agency], use_predefined_agency, "Agency");
             record.problem_id = dataset_utils::encode_id<uint32_t>(problem_dict_, row[idx_problem]);
-            record.status_id = dataset_utils::encode_id<uint8_t>(status_dict_, row[idx_status]);
+            record.status_id = dataset_utils::lookup_or_encode_id<uint8_t>(
+                status_dict_, row[idx_status], use_predefined_status, "Status");
             record.borough_id = dataset_utils::lookup_or_encode_id<uint8_t>(
                 borough_dict_, row[idx_borough], use_predefined_borough, "Borough");
         } catch (const std::runtime_error& e) {
@@ -135,7 +143,7 @@ bool Dataset::load_csv(
             if (!problem_existed) {
                 problem_dict_.erase(row[idx_problem]);
             }
-            if (!status_existed) {
+            if (!use_predefined_status && !status_existed) {
                 status_dict_.erase(row[idx_status]);
             }
             if (!use_predefined_borough && !borough_existed) {

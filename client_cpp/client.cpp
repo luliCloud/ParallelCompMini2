@@ -47,13 +47,14 @@ struct Options {
     // SOA query
     std::optional<std::int64_t> created_date_start;
     std::optional<std::int64_t> created_date_end;
+    std::optional<std::uint32_t> status_id; // 0 for In Progress, 1 for Closed
 };
 
 bool IsCommand(std::string_view token) {
     return token == "ping" || token == "query" || token == "forward"
-        || token == "count-created-date-range";
-        // || token == "count-by-agency-and-created-date-range"
-        // || token == "count-by-status-and-created-date-range";
+        || token == "count-created-date-range"
+        || token == "count-by-agency-and-created-date-range"
+        || token == "count-by-status-and-created-date-range";
 }
 
 std::string GenerateRequestId(std::string_view prefix) {
@@ -179,6 +180,8 @@ Options ParseArgs(int argc, char** argv) {
             options.created_date_start = ParseInt64(RequireValue(index, argc, argv, token), token);
         } else if (token == "--created-date-end") {
             options.created_date_end = ParseInt64(RequireValue(index, argc, argv, token), token);
+        } else if (token == "--status-id") {
+            options.status_id = ParseUint32(RequireValue(index, argc, argv, token), token);
         } else {
             ThrowUsageError("Unknown command option: " + token);
         }
@@ -237,6 +240,32 @@ SOACountRequest BuildCountCreatedDateRangeRequest(const Options& options) {
     request.set_kind(SOACountKind::SOA_COUNT_CREATED_DATE_RANGE);
     request.set_created_date_start(*options.created_date_start);
     request.set_created_date_end(*options.created_date_end);
+    return request;
+}
+
+SOACountRequest BuildCountByAgencyAndCreatedDateRangeRequest(const Options& options) {
+    if (!options.agency_id || !options.created_date_start || !options.created_date_end) {
+        ThrowUsageError("Missing required options for count-by-agency-and-created-date-range: --agency-id, --created-date-start and --created-date-end");
+    }
+    SOACountRequest request;
+    request.set_request_id(options.request_id.value_or(GenerateRequestId("client-soa-count")));
+    request.set_kind(SOACountKind::SOA_COUNT_BY_AGENCY_AND_CREATED_DATE_RANGE);
+    request.set_agency_id(*options.agency_id);
+    request.set_created_date_start(*options.created_date_start);
+    request.set_created_date_end(*options.created_date_end);
+    return request;
+}
+
+SOACountRequest BuildCountByStatusAndCreatedDateRangeRequest(const Options& options) {
+    if (!options.created_date_start || !options.created_date_end) {
+        ThrowUsageError("Missing required options for count-by-status-and-created-date-range: --created-date-start and --created-date-end");
+    }
+    SOACountRequest request;
+    request.set_request_id(options.request_id.value_or(GenerateRequestId("client-soa-count")));
+    request.set_kind(SOACountKind::SOA_COUNT_BY_STATUS_AND_CREATED_DATE_RANGE);
+    request.set_created_date_start(*options.created_date_start);
+    request.set_created_date_end(*options.created_date_end);
+    request.set_status_id(options.status_id.value_or(0));  // Assuming status_id is optional and defaults to 0 if not provided  
     return request;
 }
 
@@ -364,6 +393,41 @@ int main(int argc, char** argv) {
         } else if (options.command == "count-created-date-range") {
             const auto request = BuildCountCreatedDateRangeRequest(options);
             std::cout << "SOA Count Created Date Range request: \n";
+            std::cout << "   request_id = " << request.request_id() << '\n';
+            std::cout << "   created_date_start = " << request.created_date_start() << '\n';
+            std::cout << "   created_date_end = " << request.created_date_end() << '\n';
+
+            SOACountResponse response;
+            grpc::ClientContext context;
+            ConfigureContext(context, options.timeout_seconds);
+
+            const auto start_rpc = Clock::now();
+            grpc::Status status = stub->CountQuery(&context, request, &response);
+            const double rpc_ms = std::chrono::duration<double, std::milli>(
+                Clock::now() - start_rpc).count();
+            EnsureOk(status);
+            PrintCountResponse(response, rpc_ms);
+        } else if (options.command == "count-by-agency-and-created-date-range") {
+            const auto request = BuildCountByAgencyAndCreatedDateRangeRequest(options);
+            std::cout << "SOA Count By Agency And Created Date Range request: \n";
+            std::cout << "   request_id = " << request.request_id() << '\n';
+            std::cout << "   agency_id = " << request.agency_id() << '\n';
+            std::cout << "   created_date_start = " << request.created_date_start() << '\n';
+            std::cout << "   created_date_end = " << request.created_date_end() << '\n';
+
+            SOACountResponse response;
+            grpc::ClientContext context;
+            ConfigureContext(context, options.timeout_seconds);
+
+            const auto start_rpc = Clock::now();
+            grpc::Status status = stub->CountQuery(&context, request, &response);
+            const double rpc_ms = std::chrono::duration<double, std::milli>(
+                Clock::now() - start_rpc).count();
+            EnsureOk(status);
+            PrintCountResponse(response, rpc_ms);
+        } else if (options.command == "count-by-status-and-created-date-range") {
+            const auto request = BuildCountByStatusAndCreatedDateRangeRequest(options);
+            std::cout << "SOA Count By Status And Created Date Range request: \n";
             std::cout << "   request_id = " << request.request_id() << '\n';
             std::cout << "   created_date_start = " << request.created_date_start() << '\n';
             std::cout << "   created_date_end = " << request.created_date_end() << '\n';
