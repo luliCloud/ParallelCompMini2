@@ -24,3 +24,48 @@ std::size_t QuerySOA::count_in_created_date_range(int64_t start, int64_t end) co
 
     return count;
 }
+
+std::size_t QuerySOA::count_by_agency_and_created_date_range(
+    uint16_t agency_id, int64_t start, int64_t end) const {
+    if (start <= 0 || end <= 0 || end < start) {
+        throw std::invalid_argument("start and end must be > 0 and start <= end");
+    }
+
+    const auto& created_date = ds_.created_date();
+    const auto& agency = ds_.agency_id();
+    const std::size_t n = created_date.size();
+
+    std::size_t count = 0;
+
+    #pragma omp parallel for simd reduction(+:count)
+    for (std::size_t i = 0; i < n; ++i) {
+        count += (agency[i] == agency_id &&
+                  created_date[i] >= start &&
+                  created_date[i] <= end) ? 1 : 0;
+    }
+
+    return count;
+}
+
+std::size_t QuerySOA::count_by_status_and_created_date_range(
+    uint8_t status_id, int64_t start, int64_t end) const {
+    if (start <= 0 || end <= 0 || end < start) {
+        throw std::invalid_argument("start and end must be > 0 and start <= end");
+    }
+
+    const auto& created_date = ds_.created_date();
+    const auto& status = ds_.status_id();
+    const std::size_t n = created_date.size();
+
+    std::size_t count = 0;
+
+    #pragma omp parallel for simd reduction(+:count)
+    for (std::size_t i = 0; i < n; ++i) {
+        count += (status[i] == status_id &&
+                  created_date[i] >= start &&
+                  created_date[i] <= end) ? 1 : 0;
+    }
+
+    return count;
+}
+

@@ -27,6 +27,10 @@ using mini2::PingRequest;
 using mini2::PingResponse;
 using mini2::QueryRequest;
 using mini2::QueryResponse;
+// for SOA
+using mini2::SOACountKind;
+using mini2::SOACountRequest;
+using mini2::SOACountResponse;
 
 struct Options {
     std::string server;
@@ -40,10 +44,16 @@ struct Options {
     std::optional<float> lat_max;
     std::optional<float> lon_min;
     std::optional<float> lon_max;
+    // SOA query
+    std::optional<std::int64_t> created_date_start;
+    std::optional<std::int64_t> created_date_end;
 };
 
 bool IsCommand(std::string_view token) {
-    return token == "ping" || token == "query" || token == "forward";
+    return token == "ping" || token == "query" || token == "forward"
+        || token == "count-created-date-range";
+        // || token == "count-by-agency-and-created-date-range"
+        // || token == "count-by-status-and-created-date-range";
 }
 
 std::string GenerateRequestId(std::string_view prefix) {
@@ -80,6 +90,22 @@ std::uint32_t ParseUint32(const std::string& value, std::string_view flag) {
     }
 
     return static_cast<std::uint32_t>(parsed);
+}
+
+std::int64_t ParseInt64(const std::string& value, std::string_view flag) {
+    std::size_t consumed = 0;
+    long long parsed = 0;
+    try {
+        parsed = std::stoll(value, &consumed, 10);
+    } catch (const std::exception&) {
+        ThrowUsageError("Invalid integer for " + std::string(flag) + ": " + value);
+    }
+
+    if (consumed != value.size() || parsed > std::numeric_limits<std::int64_t>::max() || parsed < std::numeric_limits<std::int64_t>::min()) {
+        ThrowUsageError("Invalid integer for " + std::string(flag) + ": " + value);
+    }
+
+    return static_cast<std::int64_t>(parsed);
 }
 
 float ParseFloat(const std::string& value, std::string_view flag) {
@@ -131,6 +157,7 @@ Options ParseArgs(int argc, char** argv) {
     }
 
     for (; index < argc; ++index) {
+        // parse arg input for query conditions. e.g. --agency-id 1, --lat-min 40.0
         const std::string token = argv[index];
         if (token == "--request-id") {
             options.request_id = RequireValue(index, argc, argv, token);
@@ -148,6 +175,10 @@ Options ParseArgs(int argc, char** argv) {
             options.lon_min = ParseFloat(RequireValue(index, argc, argv, token), token);
         } else if (token == "--lon-max") {
             options.lon_max = ParseFloat(RequireValue(index, argc, argv, token), token);
+        } else if (token == "--created-date-start") {
+            options.created_date_start = ParseInt64(RequireValue(index, argc, argv, token), token);
+        } else if (token == "--created-date-end") {
+            options.created_date_end = ParseInt64(RequireValue(index, argc, argv, token), token);
         } else {
             ThrowUsageError("Unknown command option: " + token);
         }
@@ -197,6 +228,18 @@ QueryRequest BuildQueryRequest(const Options& options) {
     return request;
 }
 
+SOACountRequest BuildCountCreatedDateRangeRequest(const Options& options) {
+    if (!options.created_date_start || !options.created_date_end) {
+        ThrowUsageError("Missing required options for count-created-date-range: --created-date-start and --created-date-end");
+    }
+    SOACountRequest request;
+    request.set_request_id(options.request_id.value_or(GenerateRequestId("client-soa-count")));
+    request.set_kind(SOACountKind::SOA_COUNT_CREATED_DATE_RANGE);
+    request.set_created_date_start(*options.created_date_start);
+    request.set_created_date_end(*options.created_date_end);
+    return request;
+}
+
 void PrintQueryRequest(const QueryRequest& request) {
     std::cout << "query request:\n";
     std::cout << "   request_id = " << request.request_id() << '\n';
@@ -239,6 +282,14 @@ void PrintQueryResponse(std::string_view label, const QueryResponse& response, d
     std::cout << "   from_node = " << response.from_node() << '\n';
     std::cout << "   records_returned = " << response.records_size() << '\n';
     std::cout << "   " << label << "_rtt_ms = " << elapsed_ms << '\n';
+}
+
+void PrintCountResponse(const SOACountResponse& response, double elapsed_ms) {
+    std::cout << "SOA count response:\n";
+    std::cout << "   response_request_id = " << response.request_id() << '\n';
+    std::cout << "   from_node = " << response.from_node() << '\n';
+    std::cout << "   count = " << response.count() << '\n';
+    std::cout << "   count_query_rtt_ms = " << elapsed_ms << '\n';
 }
 
 void ConfigureContext(grpc::ClientContext& context, double timeout_seconds) {
@@ -310,6 +361,25 @@ int main(int argc, char** argv) {
                 Clock::now() - start_rpc).count();
             EnsureOk(status);
             PrintQueryResponse(options.command, response, rpc_ms);
+        } else if (options.command == "count-created-date-range") {
+            const auto request = BuildCountCreatedDateRangeRequest(options);
+            std::cout << "SOA Count Created Date Range request: \n";
+            std::cout << "   request_id = " << request.request_id() << '\n';
+            std::cout << "   created_date_start = " << request.created_date_start() << '\n';
+            std::cout << "   created_date_end = " << request.created_date_end() << '\n';
+
+            SOACountResponse response;
+            grpc::ClientContext context;
+            ConfigureContext(context, options.timeout_seconds);
+
+            const auto start_rpc = Clock::now();
+            grpc::Status status = stub->CountQuery(&context, request, &response);
+            const double rpc_ms = std::chrono::duration<double, std::milli>(
+                Clock::now() - start_rpc).count();
+            EnsureOk(status);
+            PrintCountResponse(response, rpc_ms);
+        } else {
+            ThrowUsageError("Unknown command: " + options.command);
         }
 
         const double total_ms = std::chrono::duration<double, std::milli>(
@@ -327,3 +397,11 @@ int main(int argc, char** argv) {
 // ./build/bin/client -s localhost:50051 ping --request-id test-ping-1
 // ./build/bin/client -s localhost:50051 query --agency-id 1
 // ./build/bin/client -s localhost:50051 forward --borough-id 2
+
+/** distributed 
+ * ./build/bin/client -s localhost:50051 count-created-date-range \
+  --created-date-start 1770249600 \
+  --created-date-end 1770335999 \
+  --request-id test-count-a
+
+ */
