@@ -34,14 +34,18 @@ QueryResponse RequestJobQueue::EnqueueAndWait(JobType type, const QueryRequest& 
 
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
+        queued_job.queue_order = next_queue_order_;
+        next_queue_order_ += 1;
         request_queue_.push_back(std::move(queued_job));
+
+        const QueuedJob& last_queued_job = request_queue_.back();
+        std::cout << "Node " << node_id_
+                  << " enqueued " << GetJobTypeName(type)
+                  << " request " << request.request_id()
+                  << " queue_order " << last_queued_job.queue_order << std::endl;
     }
 
     queue_condition_.notify_one();
-
-    std::cout << "Node " << node_id_
-              << " enqueued " << GetJobTypeName(type)
-              << " request " << request.request_id() << std::endl;
 
     return response_future.get();
 }
@@ -65,7 +69,8 @@ void RequestJobQueue::WorkerLoop() {
         const std::string request_id = queued_job.request.request_id();
         std::cout << "Node " << node_id_
                   << " worker processing " << GetJobTypeName(queued_job.type)
-                  << " request " << request_id << std::endl;
+                  << " request " << request_id
+                  << " queue_order " << queued_job.queue_order << std::endl;
 
         try {
             QueryResponse response = job_processor_(queued_job.type, queued_job.request);
@@ -82,6 +87,7 @@ void RequestJobQueue::WorkerLoop() {
 
         std::cout << "Node " << node_id_
                   << " worker completed " << GetJobTypeName(queued_job.type)
-                  << " request " << request_id << std::endl;
+                  << " request " << request_id
+                  << " queue_order " << queued_job.queue_order << std::endl;
     }
 }

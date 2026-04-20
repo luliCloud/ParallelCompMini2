@@ -1,6 +1,7 @@
 #pragma once
 
 #include <condition_variable>
+#include <cstddef>
 #include <deque>
 #include <functional>
 #include <future>
@@ -29,6 +30,7 @@ private:
         JobType type;
         QueryRequest request;
         std::promise<QueryResponse> promise;
+        std::size_t queue_order = 0;
     };
 
     void WorkerLoop();
@@ -40,4 +42,5 @@ private:
     std::condition_variable queue_condition_;
     std::thread worker_thread_;
     bool stop_worker_ = false;
+    std::size_t next_queue_order_ = 1;
 };
