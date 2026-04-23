@@ -2,6 +2,9 @@
 
 #include <string>
 #include <vector>
+#include <cstdint>
+#include <mutex>
+#include <unordered_map>
 
 #include <grpcpp/server_context.h>
 
@@ -29,6 +32,12 @@ using mini2::SOAGroupByResponse;
 using mini2::SOATopKRequest;
 using mini2::SOATopKResponse;
 
+// for chunk streaming RPCs
+using mini2::ChunkCancelRequest;
+using mini2::ChunkCancelResponse;
+using mini2::ChunkRequest;
+using mini2::ChunkSessionResponse;
+using mini2::QueryChunkResponse;
 
 struct PeerInfo
 {
@@ -78,6 +87,17 @@ public:
     // Status TopKQuery(ServerContext* context, const SOATopKRequest* request, 
     //                  SOATopKResponse* response) override;
 
+    /** Streaming calls */
+    Status StartForwardChunks(ServerContext* context, const QueryRequest* request,
+                             ChunkSessionResponse* response) override;
+
+    Status GetForwardChunk(ServerContext* context, const ChunkRequest* request,
+                            QueryChunkResponse* response) override;
+
+    Status CancelChunks(ServerContext* context, const ChunkCancelRequest* request,
+                         ChunkCancelResponse* response) override;
+
+
 private:
     // Execute local search for a Query job.
     QueryResponse ProcessQueryJob(const QueryRequest& request);
@@ -85,6 +105,20 @@ private:
     QueryResponse ProcessForwardJob(const QueryRequest& request);
     // Dispatch a queued request to the right local processor.
     QueryResponse ProcessJob(JobType type, const QueryRequest& request);
+
+    // Streaming helper methods
+    std::string CreateChunkSessionId(const std::string& request_id) const;
+
+    struct ChunkSession {
+        std::string request_id;
+        std::string from_node;
+        std::uint32_t total_chunks = 0;
+        std::uint32_t chunk_size = 0;
+        std::vector<mini2::Record> records;
+    };
+
+    std::mutex chunk_sessions_mutex_;
+    std::unordered_map<std::string, ChunkSession> chunk_sessions_; // session_id -> session info
 
     std::string node_id_;
     uint16_t port_;

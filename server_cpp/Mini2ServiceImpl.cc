@@ -3,10 +3,16 @@
 #include <future>
 #include <iostream>
 #include <stdexcept>
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <sstream>
 
 #include <grpcpp/grpcpp.h>
 
 namespace {
+
+constexpr std::uint32_t kDefaultChunkSize = 1000; // Default number of records per chunk for streaming
 
 bool MatchesQuery(const Record& record, const QueryRequest& request) {
     if (request.has_agency_id() &&
@@ -392,4 +398,110 @@ Status Mini2ServiceImpl::CountQuery(ServerContext* context, const SOACountReques
     response->set_count(total_count);
     std::cout << "[" << node_id_ << "] CountQuery returning total count: " << total_count << std::endl;
     return Status::OK;
+}
+
+Status Mini2ServiceImpl::StartForwardChunks(
+    ServerContext* context, const QueryRequest* request,
+    ChunkSessionResponse* response) {
+    (void)context;
+
+    const std::uint32_t chunk_size = 
+        request->has_chunk_size() && request->chunk_size() > 0
+            ? request->chunk_size()
+            : kDefaultChunkSize;  
+    
+    // fan-out. 
+    /** TODO: 1st version will get complete result internally, then return to client chunk by chunk
+     * 2nd version will stream chunks to client as soon as local search is done and peer responses start coming in, without waiting for the complete result. This will require more complex session and state management
+     */
+    QueryResponse full_result = job_queue_.EnqueueAndWait(JobType::Forward, *request);
+
+    const std::uint64_t total_records = full_result.records_size();
+    const std::uint32_t total_chunks = total_records == 0 ? 0 : static_cast<std::uint32_t>((total_records + chunk_size - 1) / chunk_size);
+
+    std::string session_id = CreateChunkSessionId(request->request_id());
+
+    ChunkSession session;
+    session.request_id = request->request_id();
+    session.from_node = node_id_;
+    session.total_chunks = total_chunks;
+    session.chunk_size = chunk_size;
+
+    for (const auto& record : full_result.records()) {
+        session.records.push_back(record);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(chunk_sessions_mutex_);
+        chunk_sessions_[session_id] = std::move(session);
+    }
+
+    response->set_session_id(session_id);
+    response->set_request_id(request->request_id());
+    response->set_from_node(node_id_);
+    response->set_total_chunks(total_chunks);
+    response->set_chunk_size(chunk_size);
+    response->set_total_records(total_records);
+
+    return Status::OK;
+}
+
+Status Mini2ServiceImpl::GetForwardChunk(
+    ServerContext* context, const ChunkRequest* request,
+    QueryChunkResponse* response) {
+    (void)context;
+
+    std::lock_guard<std::mutex> lock(chunk_sessions_mutex_);
+    auto it = chunk_sessions_.find(request->session_id());
+    if (it == chunk_sessions_.end()) {
+        return Status(grpc::StatusCode::NOT_FOUND, "Chunk session not found");
+    }
+
+    const ChunkSession& session = it->second;
+    const std::uint64_t start = static_cast<std::uint64_t>(request->chunk_index()) * session.chunk_size;
+    if (start >= session.records.size()) {
+        return Status(grpc::StatusCode::OUT_OF_RANGE, "Chunk index out of range");
+    }   
+    const std::uint64_t end = std::min(start + session.chunk_size, static_cast<std::uint64_t>(session.records.size()));
+
+    response->set_request_id(session.request_id);
+    response->set_session_id(request->session_id());
+    response->set_from_node(session.from_node);
+    response->set_chunk_index(request->chunk_index());
+    response->set_chunk_size(session.chunk_size);
+    response->set_total_chunks(session.total_chunks);
+    response->set_total_records(session.records.size());
+
+    for (std::uint64_t i = start; i < end; ++i) {
+        response->add_records()->CopyFrom(session.records[static_cast<std::size_t>(i)]); 
+    }
+
+    response->set_done(request->chunk_index() + 1 >= session.total_chunks); // determine if this is the last chunk using >=
+    return Status::OK;
+}
+
+// clean up session info and cached data for the session if client received all data or cancel request
+Status Mini2ServiceImpl::CancelChunks(
+    ServerContext* context, const ChunkCancelRequest* request,
+    ChunkCancelResponse* response) {
+    (void)context;
+
+    std::lock_guard<std::mutex> lock(chunk_sessions_mutex_);
+    bool cancelled = chunk_sessions_.erase(request->session_id()) > 0;
+
+    response->set_session_id(request->session_id());
+    response->set_cancelled(cancelled);
+    return Status::OK;
+}
+
+/** Session id helper functions 
+ * e.g.: A-client-query-123-1776900000000000
+ */
+std::string Mini2ServiceImpl::CreateChunkSessionId(const std::string& request_id) const {
+    auto now = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    std::stringstream out;
+    out << node_id_ << "_" << request_id << "_" << now;
+    return out.str();
 }
