@@ -11,6 +11,9 @@ service NodeService {
   rpc CountQuery(SOACountRequest) returns (SOACountResponse)      {}
   rpc GroupByQuery(SOAGroupByRequest) returns (SOAGroupByResponse) {}
   rpc TopKQuery(SOATopKRequest)   returns (SOATopKResponse)       {}
+  rpc StartForwardChunks(QueryRequest) returns (ChunkSessionResponse) {} // sender: client. receiver: serverA/coordinator.return:a session_id to client. general rpc, not streaming. 
+  rpc GetForwardChunk(ChunkRequest) returns (QueryChunkResponse) {} // client use session_id to pull chunk by chunk
+  rpc CancelChunks(ChunkCancelRequest) returns (ChunkCancelResponse) {}
 }
 
 message PingRequest {
@@ -21,7 +24,9 @@ message PingResponse {
   string          request_id    = 1;
   repeated string active_nodes  = 2;
 }
-
+/* request sent by client. Query, Forward, StartForwardChunks can use it
+ * Which records to check, filter condition: agency, borough, etc 
+ */
 message QueryRequest {
   string          request_id = 1;
   optional uint32 agency_id  = 2;
@@ -31,12 +36,53 @@ message QueryRequest {
   optional float  lat_max    = 6;
   optional float  lon_min    = 7;
   optional float  lon_max    = 8;
+  optional uint32 chunk_size = 9; // max records by each chunk
 }
 
 message QueryResponse {
   string          request_id = 1;
   repeated Record records    = 2;
   string          from_node  = 3;
+}
+
+/* This is the return of StartForwardChunks. 
+ * It is not the records. Deliver info to client: your query is ready. This is session info 
+ */
+message ChunkSessionResponse {
+  string request_id = 1;
+  string session_id = 2; // created by server. Get chunk by this
+  string from_node = 3; // who create this chunk
+  uint32 chunk_size = 4;
+  uint32 total_chunks = 5;
+  uint64 total_records = 6;
+}
+
+// Request from client to get a chunk
+message ChunkRequest {
+  string session_id = 1;
+  uint32 chunk_index = 2;
+}
+
+// A chunk, return by GetForwardChunk
+message QueryChunkResponse {
+  string request_id = 1;
+  string session_id = 2;
+  string from_node = 3;
+  uint32 chunk_index = 4;
+  uint32 chunk_size = 5;
+  uint32 total_chunks = 6;
+  uint64 total_records = 7;
+  bool done = 8;
+  repeated Record records = 9;
+}
+
+message ChunkCancelRequest {
+  string session_id = 1;
+}
+
+message ChunkCancelResponse {
+  string session_id = 1;
+  bool cancelled = 2;
 }
 
 enum SOACountKind {
