@@ -30,6 +30,17 @@ public:
     const std::vector<uint32_t>& zip_code() const { return zip_code_; }
     const std::vector<float>& latitude() const { return latitude_; }
     const std::vector<float>& longitude() const { return longitude_; }
+    void append_record(
+        uint32_t id,
+        int64_t created_date,
+        int64_t closed_date,
+        uint16_t agency_id,
+        uint32_t problem_id,
+        uint8_t status_id,
+        uint8_t borough_id,
+        uint32_t zip_code,
+        float latitude,
+        float longitude);
 
     /** TODO: if we already stored as vectorization, do we still need to have map to store these info? */
     template <typename UInt>

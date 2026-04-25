@@ -40,6 +40,7 @@ public:
     size_t size() const { return records_.size(); }
 
     const std::vector<Record>& get_records() const { return records_; }
+    void append_record(const Record& record) { records_.push_back(record); }
 
     /** Retrieves the encoded ID for a specific attribute value.*/
     template <typename UInt>
