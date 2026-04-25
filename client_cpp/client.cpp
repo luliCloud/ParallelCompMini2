@@ -23,8 +23,13 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 using mini2::NodeService;
+using mini2::ChunkCancelRequest;
+using mini2::ChunkCancelResponse;
+using mini2::ChunkRequest;
+using mini2::ChunkSessionResponse;
 using mini2::PingRequest;
 using mini2::PingResponse;
+using mini2::QueryChunkResponse;
 using mini2::QueryRequest;
 using mini2::QueryResponse;
 using mini2::InsertRequest;
@@ -50,6 +55,7 @@ struct Options {
     std::optional<float> lon_max;
     std::optional<float> latitude;
     std::optional<float> longitude;
+    std::optional<std::uint32_t> chunk_size;
     // SOA query
     std::optional<std::int64_t> created_date;
     std::optional<std::int64_t> closed_date;
@@ -60,6 +66,7 @@ struct Options {
 
 bool IsCommand(std::string_view token) {
     return token == "ping" || token == "query" || token == "forward" || token == "insert"
+        || token == "forward-chunked"
         || token == "count-created-date-range"
         || token == "count-by-agency-and-created-date-range"
         || token == "count-by-status-and-created-date-range";
@@ -74,7 +81,7 @@ std::string GenerateRequestId(std::string_view prefix) {
 }
 
 [[noreturn]] void ThrowUsageError(const std::string& message) {
-    throw std::runtime_error(message + "\nUsage: client -s <host:port> [-t <seconds>] <ping|query|forward> [options]");
+    throw std::runtime_error(message + "\nUsage: client -s <host:port> [-t <seconds>] <ping|query|forward|forward-chunked> [options]");
 }
 
 std::string RequireValue(int& index, int argc, char** argv, std::string_view flag) {
@@ -196,6 +203,8 @@ Options ParseArgs(int argc, char** argv) {
             options.created_date = ParseInt64(RequireValue(index, argc, argv, token), token);
         } else if (token == "--closed-date") {
             options.closed_date = ParseInt64(RequireValue(index, argc, argv, token), token);
+        } else if (token == "--chunk-size") {
+            options.chunk_size = ParseUint32(RequireValue(index, argc, argv, token), token);
         } else if (token == "--created-date-start") {
             options.created_date_start = ParseInt64(RequireValue(index, argc, argv, token), token);
         } else if (token == "--created-date-end") {
@@ -279,6 +288,9 @@ QueryRequest BuildQueryRequest(const Options& options) {
     if (options.lon_max) {
         request.set_lon_max(*options.lon_max);
     }
+    if (options.chunk_size) {
+        request.set_chunk_size(*options.chunk_size);
+    }
     return request;
 }
 
@@ -344,6 +356,9 @@ void PrintQueryRequest(const QueryRequest& request) {
     if (request.has_lon_max()) {
         std::cout << "   lon_max = " << request.lon_max() << '\n';
     }
+    if (request.has_chunk_size()) {
+        std::cout << "   chunk_size = " << request.chunk_size() << '\n';
+    }
 }
 
 void PrintPingResponse(const PingResponse& response, double elapsed_ms) {
@@ -362,6 +377,27 @@ void PrintQueryResponse(std::string_view label, const QueryResponse& response, d
     std::cout << "   from_node = " << response.from_node() << '\n';
     std::cout << "   records_returned = " << response.records_size() << '\n';
     std::cout << "   " << label << "_rtt_ms = " << elapsed_ms << '\n';
+}
+
+void PrintChunkSessionResponse(const ChunkSessionResponse& response, double elapsed_ms) {
+    std::cout << "forward-chunked session:\n";
+    std::cout << "   response_request_id = " << response.request_id() << '\n';
+    std::cout << "   session_id = " << response.session_id() << '\n';
+    std::cout << "   from_node = " << response.from_node() << '\n';
+    std::cout << "   chunk_size = " << response.chunk_size() << '\n';
+    std::cout << "   total_chunks = " << response.total_chunks() << '\n';
+    std::cout << "   total_records = " << response.total_records() << '\n';
+    std::cout << "   start_forward_chunks_rtt_ms = " << elapsed_ms << '\n';
+}
+
+void PrintChunkResponse(const QueryChunkResponse& response, double elapsed_ms) {
+    std::cout << "forward chunk:\n";
+    std::cout << "   session_id = " << response.session_id() << '\n';
+    std::cout << "   chunk_index = " << response.chunk_index() << '\n';
+    std::cout << "   records_returned = " << response.records_size() << '\n';
+    std::cout << "   total_chunks = " << response.total_chunks() << '\n';
+    std::cout << "   done = " << response.done() << '\n';
+    std::cout << "   get_forward_chunk_rtt_ms = " << elapsed_ms << '\n';
 }
 
 void PrintCountResponse(const SOACountResponse& response, double elapsed_ms) {
@@ -475,6 +511,65 @@ int main(int argc, char** argv) {
                 Clock::now() - start_rpc).count();
             EnsureOk(status);
             PrintInsertResponse(response, rpc_ms);
+        } else if (options.command == "forward-chunked") {
+            const QueryRequest request = BuildQueryRequest(options);
+            PrintQueryRequest(request);
+
+            ChunkSessionResponse session_response;
+            grpc::ClientContext start_context;
+            ConfigureContext(start_context, options.timeout_seconds);
+
+            const auto start_rpc = Clock::now();
+            grpc::Status status = stub->StartForwardChunks(
+                &start_context,
+                request,
+                &session_response);
+            const double start_rpc_ms = std::chrono::duration<double, std::milli>(
+                Clock::now() - start_rpc).count();
+            EnsureOk(status);
+            PrintChunkSessionResponse(session_response, start_rpc_ms);
+
+            std::uint64_t total_records_received = 0;
+            for (std::uint32_t chunk_index = 0;
+                 chunk_index < session_response.total_chunks();
+                 ++chunk_index) {
+                ChunkRequest chunk_request;
+                chunk_request.set_session_id(session_response.session_id());
+                chunk_request.set_chunk_index(chunk_index);
+
+                QueryChunkResponse chunk_response;
+                grpc::ClientContext chunk_context;
+                ConfigureContext(chunk_context, options.timeout_seconds);
+
+                const auto start_chunk_rpc = Clock::now();
+                status = stub->GetForwardChunk(
+                    &chunk_context,
+                    chunk_request,
+                    &chunk_response);
+                const double chunk_rpc_ms = std::chrono::duration<double, std::milli>(
+                    Clock::now() - start_chunk_rpc).count();
+                EnsureOk(status);
+
+                total_records_received +=
+                    static_cast<std::uint64_t>(chunk_response.records_size());
+                PrintChunkResponse(chunk_response, chunk_rpc_ms);
+
+                if (chunk_response.done()) {
+                    break;
+                }
+            }
+
+            ChunkCancelRequest cancel_request;
+            cancel_request.set_session_id(session_response.session_id());
+            ChunkCancelResponse cancel_response;
+            grpc::ClientContext cancel_context;
+            ConfigureContext(cancel_context, options.timeout_seconds);
+            status = stub->CancelChunks(&cancel_context, cancel_request, &cancel_response);
+            EnsureOk(status);
+
+            std::cout << "forward-chunked response:\n";
+            std::cout << "   records_received = " << total_records_received << '\n';
+            std::cout << "   session_cancelled = " << cancel_response.cancelled() << '\n';
         } else if (options.command == "count-created-date-range") {
             const auto request = BuildCountCreatedDateRangeRequest(options);
             std::cout << "SOA Count Created Date Range request: \n";
