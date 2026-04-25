@@ -19,6 +19,8 @@ bool ForwardResponseCache::TryGet(
         return false;
     }
 
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+
     const std::string cache_key = BuildCacheKey(request);
     auto cached_entry = cached_responses_.find(cache_key);
     if (cached_entry == cached_responses_.end()) {
@@ -49,6 +51,8 @@ void ForwardResponseCache::Store(
         return;
     }
 
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+
     const std::string cache_key = BuildCacheKey(request);
     auto existing_entry = cached_responses_.find(cache_key);
     if (existing_entry != cached_responses_.end()) {
@@ -76,6 +80,18 @@ void ForwardResponseCache::Store(
 
     std::cout << "[" << node_id_ << "] Forward cache stored: "
               << request.request_id() << std::endl;
+}
+
+void ForwardResponseCache::Clear() {
+    if (!enabled_) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    cache_order_.clear();
+    cached_responses_.clear();
+
+    std::cout << "[" << node_id_ << "] Forward cache cleared" << std::endl;
 }
 
 std::string ForwardResponseCache::BuildCacheKey(

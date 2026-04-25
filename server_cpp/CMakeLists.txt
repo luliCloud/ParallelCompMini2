@@ -73,6 +73,7 @@ target_include_directories(mini2_grpc_proto PUBLIC
 add_executable(server 
     server.cpp
     ForwardResponseCache.cc
+    InsertRouteConfig.cc
     RequestJobQueue.cc
     Mini2ServiceImpl.cc
 )

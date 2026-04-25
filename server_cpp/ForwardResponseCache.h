@@ -1,6 +1,7 @@
 #pragma once
 
 #include <list>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -25,6 +26,8 @@ public:
         const mini2::QueryRequest& request,
         const mini2::QueryResponse& response);
 
+    void Clear();
+
 private:
     struct CachedResponseEntry {
         mini2::QueryResponse response;
@@ -37,6 +40,7 @@ private:
     std::string node_id_;
     bool enabled_;
     std::size_t max_entries_;
+    std::mutex cache_mutex_;
     std::list<std::string> cache_order_;
     std::unordered_map<std::string, CachedResponseEntry> cached_responses_;
 };

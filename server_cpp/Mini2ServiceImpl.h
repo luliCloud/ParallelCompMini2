@@ -1,11 +1,13 @@
 #pragma once
 
 #include <string>
+#include <mutex>
 #include <vector>
 
 #include <grpcpp/server_context.h>
 
 #include "ForwardResponseCache.h"
+#include "InsertRouteConfig.h"
 #include "mini2.grpc.pb.h"
 #include "RequestJobQueue.h"
 #include "dataset.hpp"
@@ -19,6 +21,8 @@ using mini2::QueryRequest;
 using mini2::QueryResponse;
 using mini2::PingRequest;
 using mini2::PingResponse;
+using mini2::InsertRequest;
+using mini2::InsertResponse;
 
 // for SOA
 using mini2::SOACountKind;
@@ -58,6 +62,9 @@ public:
         const std::string& status_dict_path = "");
     // Set peer and set up connection
     void SetPeers(const std::vector<PeerInfo>& peers);
+    void SetInsertRoutes(
+        const std::vector<InsertRoute>& routes,
+        const std::string& default_node_id);
 
     // Service methods (gRPC overrides)
     Status Ping(ServerContext* context, const PingRequest* request,
@@ -68,6 +75,9 @@ public:
 
     Status Forward(ServerContext* context, const QueryRequest* request,
                    QueryResponse* response) override;
+
+    Status Insert(ServerContext* context, const InsertRequest* request,
+                  InsertResponse* response) override;
 
     Status CountQuery(ServerContext* context, const SOACountRequest* request, 
                       SOACountResponse* response) override;
@@ -85,12 +95,19 @@ private:
     QueryResponse ProcessForwardJob(const QueryRequest& request);
     // Dispatch a queued request to the right local processor.
     QueryResponse ProcessJob(JobType type, const QueryRequest& request);
+    // Execute insert routing or local insert for an Insert job.
+    InsertResponse ProcessInsertJob(const InsertRequest& request);
+    std::string ChooseLeafNodeForInsert(int64_t created_date) const;
+    InsertResponse StoreRecordLocally(const InsertRequest& request);
 
     std::string node_id_;
     uint16_t port_;
     Dataset dataset_;
     std::vector<ConnectedPeer> connected_peers_;
+    std::vector<InsertRoute> insert_routes_;
+    std::string default_insert_node_id_;
     DatasetSOA dataset_soa_; // for SOA queries
+    std::mutex dataset_mutex_;
     RequestJobQueue job_queue_;
     // Cache is config-driven through enable_cache in each node YAML.
     ForwardResponseCache forward_cache_;

@@ -216,3 +216,26 @@ bool DatasetSOA::load_csv(
        latitude_.size() == longitude_.size();
 
 }
+
+void DatasetSOA::append_record(
+    uint32_t id,
+    int64_t created_date,
+    int64_t closed_date,
+    uint16_t agency_id,
+    uint32_t problem_id,
+    uint8_t status_id,
+    uint8_t borough_id,
+    uint32_t zip_code,
+    float latitude,
+    float longitude) {
+    id_.push_back(id);
+    created_date_.push_back(created_date);
+    closed_date_.push_back(closed_date);
+    agency_id_.push_back(agency_id);
+    problem_id_.push_back(problem_id);
+    status_id_.push_back(status_id);
+    borough_id_.push_back(borough_id);
+    zip_code_.push_back(zip_code);
+    latitude_.push_back(latitude);
+    longitude_.push_back(longitude);
+}

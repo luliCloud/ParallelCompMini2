@@ -27,6 +27,8 @@ using mini2::PingRequest;
 using mini2::PingResponse;
 using mini2::QueryRequest;
 using mini2::QueryResponse;
+using mini2::InsertRequest;
+using mini2::InsertResponse;
 // for SOA
 using mini2::SOACountKind;
 using mini2::SOACountRequest;
@@ -40,18 +42,24 @@ struct Options {
     std::optional<std::uint32_t> agency_id;
     std::optional<std::uint32_t> borough_id;
     std::optional<std::uint32_t> zip_code;
+    std::optional<std::uint32_t> record_id;
+    std::optional<std::uint32_t> problem_id;
     std::optional<float> lat_min;
     std::optional<float> lat_max;
     std::optional<float> lon_min;
     std::optional<float> lon_max;
+    std::optional<float> latitude;
+    std::optional<float> longitude;
     // SOA query
+    std::optional<std::int64_t> created_date;
+    std::optional<std::int64_t> closed_date;
     std::optional<std::int64_t> created_date_start;
     std::optional<std::int64_t> created_date_end;
     std::optional<std::uint32_t> status_id; // 0 for In Progress, 1 for Closed
 };
 
 bool IsCommand(std::string_view token) {
-    return token == "ping" || token == "query" || token == "forward"
+    return token == "ping" || token == "query" || token == "forward" || token == "insert"
         || token == "count-created-date-range"
         || token == "count-by-agency-and-created-date-range"
         || token == "count-by-status-and-created-date-range";
@@ -162,10 +170,14 @@ Options ParseArgs(int argc, char** argv) {
         const std::string token = argv[index];
         if (token == "--request-id") {
             options.request_id = RequireValue(index, argc, argv, token);
+        } else if (token == "--record-id") {
+            options.record_id = ParseUint32(RequireValue(index, argc, argv, token), token);
         } else if (token == "--agency-id") {
             options.agency_id = ParseUint32(RequireValue(index, argc, argv, token), token);
         } else if (token == "--borough-id") {
             options.borough_id = ParseUint32(RequireValue(index, argc, argv, token), token);
+        } else if (token == "--problem-id") {
+            options.problem_id = ParseUint32(RequireValue(index, argc, argv, token), token);
         } else if (token == "--zip-code") {
             options.zip_code = ParseUint32(RequireValue(index, argc, argv, token), token);
         } else if (token == "--lat-min") {
@@ -176,6 +188,14 @@ Options ParseArgs(int argc, char** argv) {
             options.lon_min = ParseFloat(RequireValue(index, argc, argv, token), token);
         } else if (token == "--lon-max") {
             options.lon_max = ParseFloat(RequireValue(index, argc, argv, token), token);
+        } else if (token == "--latitude") {
+            options.latitude = ParseFloat(RequireValue(index, argc, argv, token), token);
+        } else if (token == "--longitude") {
+            options.longitude = ParseFloat(RequireValue(index, argc, argv, token), token);
+        } else if (token == "--created-date") {
+            options.created_date = ParseInt64(RequireValue(index, argc, argv, token), token);
+        } else if (token == "--closed-date") {
+            options.closed_date = ParseInt64(RequireValue(index, argc, argv, token), token);
         } else if (token == "--created-date-start") {
             options.created_date_start = ParseInt64(RequireValue(index, argc, argv, token), token);
         } else if (token == "--created-date-end") {
@@ -201,6 +221,37 @@ void PrintClientHeader(const Options& options, double connect_ms) {
 PingRequest BuildPingRequest(const Options& options) {
     PingRequest request;
     request.set_request_id(options.request_id.value_or(GenerateRequestId("client-ping")));
+    return request;
+}
+
+InsertRequest BuildInsertRequest(const Options& options) {
+    if (!options.record_id ||
+        !options.created_date ||
+        !options.agency_id ||
+        !options.problem_id ||
+        !options.status_id ||
+        !options.borough_id) {
+        ThrowUsageError(
+            "Missing required options for insert: "
+            "--record-id, --created-date, --agency-id, "
+            "--problem-id, --status-id, --borough-id");
+    }
+
+    InsertRequest request;
+    request.set_request_id(options.request_id.value_or(GenerateRequestId("client-insert")));
+
+    auto* record = request.mutable_record();
+    record->set_id(*options.record_id);
+    record->set_created_date(*options.created_date);
+    record->set_closed_date(options.closed_date.value_or(0));
+    record->set_agency_id(*options.agency_id);
+    record->set_problem_id(*options.problem_id);
+    record->set_status_id(*options.status_id);
+    record->set_borough_id(*options.borough_id);
+    record->set_zip_code(options.zip_code.value_or(0));
+    record->set_latitude(options.latitude.value_or(0.0f));
+    record->set_longitude(options.longitude.value_or(0.0f));
+
     return request;
 }
 
@@ -321,6 +372,27 @@ void PrintCountResponse(const SOACountResponse& response, double elapsed_ms) {
     std::cout << "   count_query_rtt_ms = " << elapsed_ms << '\n';
 }
 
+void PrintInsertRequest(const InsertRequest& request) {
+    std::cout << "insert request:\n";
+    std::cout << "   request_id = " << request.request_id() << '\n';
+    std::cout << "   record_id = " << request.record().id() << '\n';
+    std::cout << "   created_date = " << request.record().created_date() << '\n';
+    std::cout << "   agency_id = " << request.record().agency_id() << '\n';
+    std::cout << "   problem_id = " << request.record().problem_id() << '\n';
+    std::cout << "   status_id = " << request.record().status_id() << '\n';
+    std::cout << "   borough_id = " << request.record().borough_id() << '\n';
+    std::cout << "   zip_code = " << request.record().zip_code() << '\n';
+}
+
+void PrintInsertResponse(const InsertResponse& response, double elapsed_ms) {
+    std::cout << "insert response:\n";
+    std::cout << "   response_request_id = " << response.request_id() << '\n';
+    std::cout << "   from_node = " << response.from_node() << '\n';
+    std::cout << "   stored_at_node = " << response.stored_at_node() << '\n';
+    std::cout << "   inserted = " << (response.inserted() ? "true" : "false") << '\n';
+    std::cout << "   insert_rtt_ms = " << elapsed_ms << '\n';
+}
+
 void ConfigureContext(grpc::ClientContext& context, double timeout_seconds) {
     const auto timeout = std::chrono::duration_cast<std::chrono::system_clock::duration>(
         std::chrono::duration<double>(timeout_seconds));
@@ -390,6 +462,19 @@ int main(int argc, char** argv) {
                 Clock::now() - start_rpc).count();
             EnsureOk(status);
             PrintQueryResponse(options.command, response, rpc_ms);
+        } else if (options.command == "insert") {
+            const InsertRequest request = BuildInsertRequest(options);
+            PrintInsertRequest(request);
+
+            InsertResponse response;
+            grpc::ClientContext context;
+            ConfigureContext(context, options.timeout_seconds);
+            const auto start_rpc = Clock::now();
+            const grpc::Status status = stub->Insert(&context, request, &response);
+            const double rpc_ms = std::chrono::duration<double, std::milli>(
+                Clock::now() - start_rpc).count();
+            EnsureOk(status);
+            PrintInsertResponse(response, rpc_ms);
         } else if (options.command == "count-created-date-range") {
             const auto request = BuildCountCreatedDateRangeRequest(options);
             std::cout << "SOA Count Created Date Range request: \n";

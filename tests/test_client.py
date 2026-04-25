@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 E2E Test Suite for Mini2 gRPC Server
-Tests basic server functionality: Ping, Query, Forward
+Tests basic server functionality: Ping, Query, Forward, Insert
 """
 
 import grpc
@@ -218,6 +218,68 @@ class Mini2TestClient:
 
         self.test("Forward", run_test)
 
+    def test_insert(self):
+        """Test Insert RPC and verify with Forward"""
+        print("\n[TEST 7] Insert Request")
+
+        def run_test():
+            suffix = time.time_ns() % 100000
+            record_id = 900000000 + suffix
+            zip_code = 98000 + (suffix % 1000)
+            created_date = 1770631498
+            expected_node = "G"
+
+            before_request = mini2_pb2.QueryRequest()
+            before_request.request_id = f"test_insert_before_{suffix}"
+            before_request.zip_code = zip_code
+            before_response = self.stub.Forward(before_request, timeout=self.timeout)
+            before_count = len(before_response.records)
+
+            insert_request = mini2_pb2.InsertRequest()
+            insert_request.request_id = f"test_insert_{suffix}"
+            insert_request.record.id = record_id
+            insert_request.record.created_date = created_date
+            insert_request.record.closed_date = 0
+            insert_request.record.agency_id = 0
+            insert_request.record.problem_id = 0
+            insert_request.record.status_id = 0
+            insert_request.record.borough_id = 0
+            insert_request.record.zip_code = zip_code
+            insert_request.record.latitude = 40.7
+            insert_request.record.longitude = -73.9
+
+            insert_response = self.stub.Insert(insert_request, timeout=self.timeout)
+
+            assert insert_response is not None, "Insert response is None"
+            assert insert_response.request_id == insert_request.request_id, (
+                "Insert request ID mismatch"
+            )
+            assert insert_response.inserted, "Insert response inserted is false"
+            assert insert_response.stored_at_node == expected_node, (
+                f"Record stored at {insert_response.stored_at_node}, "
+                f"expected {expected_node}"
+            )
+
+            after_request = mini2_pb2.QueryRequest()
+            after_request.request_id = f"test_insert_after_{suffix}"
+            after_request.zip_code = zip_code
+            after_response = self.stub.Forward(after_request, timeout=self.timeout)
+            after_count = len(after_response.records)
+
+            assert after_count == before_count + 1, (
+                f"Expected {before_count + 1} records after insert, got {after_count}"
+            )
+
+            print(f"  Insert request ID: {insert_request.request_id}")
+            print(f"  Record ID: {record_id}")
+            print(f"  Created date: {created_date}")
+            print(f"  Zip code: {zip_code}")
+            print(f"  Stored at node: {insert_response.stored_at_node}")
+            print(f"  Records before insert: {before_count}")
+            print(f"  Records after insert: {after_count}")
+
+        self.test("Insert", run_test)
+
     def run_all_tests(self):
         """Run all test cases"""
         print("Mini2 gRPC Server - E2E Test Suite")
@@ -233,6 +295,7 @@ class Mini2TestClient:
             self.test_query_with_agency()
             self.test_query_geographic()
             self.test_forward()
+            self.test_insert()
         finally:
             self.close()
 

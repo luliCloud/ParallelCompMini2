@@ -8,6 +8,7 @@ service NodeService {
   rpc Ping(PingRequest)           returns (PingResponse)          {}
   rpc Query(QueryRequest)         returns (QueryResponse)         {}
   rpc Forward(QueryRequest)       returns (QueryResponse)         {}
+  rpc Insert(InsertRequest)       returns (InsertResponse)        {}
   rpc CountQuery(SOACountRequest) returns (SOACountResponse)      {}
   rpc GroupByQuery(SOAGroupByRequest) returns (SOAGroupByResponse) {}
   rpc TopKQuery(SOATopKRequest)   returns (SOATopKResponse)       {}
@@ -37,6 +38,19 @@ message QueryResponse {
   string          request_id = 1;
   repeated Record records    = 2;
   string          from_node  = 3;
+}
+
+message InsertRequest {
+  string request_id = 1;
+  Record record = 2;
+  string target_node_id = 3;
+}
+
+message InsertResponse {
+  string request_id = 1;
+  string from_node = 2;
+  string stored_at_node = 3;
+  bool inserted = 4;
 }
 
 enum SOACountKind {

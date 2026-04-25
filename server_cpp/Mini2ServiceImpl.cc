@@ -8,6 +8,12 @@
 
 namespace {
 
+class NoInsertRouteError : public std::runtime_error {
+public:
+    explicit NoInsertRouteError(const std::string& message)
+        : std::runtime_error(message) {}
+};
+
 bool MatchesQuery(const Record& record, const QueryRequest& request) {
     if (request.has_agency_id() &&
         record.agency_id != static_cast<uint16_t>(request.agency_id())) {
@@ -56,8 +62,23 @@ void AppendRecord(const Record& record, QueryResponse* response) {
     out->set_longitude(record.longitude);
 }
 
+Record BuildLocalRecord(const mini2::Record& source_record) {
+    Record record{};
+    record.id = source_record.id();
+    record.created_date = source_record.created_date();
+    record.closed_date = source_record.closed_date();
+    record.agency_id = static_cast<uint16_t>(source_record.agency_id());
+    record.problem_id = source_record.problem_id();
+    record.status_id = static_cast<uint8_t>(source_record.status_id());
+    record.borough_id = static_cast<uint8_t>(source_record.borough_id());
+    record.zip_code = source_record.zip_code();
+    record.latitude = source_record.latitude();
+    record.longitude = source_record.longitude();
+    return record;
+}
+
 struct LocalSearchResult {
-    std::vector<const Record*> records;
+    std::vector<Record> records;
     std::size_t matched_record_count = 0;
 };
 
@@ -69,7 +90,7 @@ LocalSearchResult CollectLocalMatches(const Dataset& dataset,
         if (!MatchesQuery(record, request)) {
             continue;
         }
-        result.records.push_back(&record);
+        result.records.push_back(record);
         result.matched_record_count++;
     }
 
@@ -85,6 +106,8 @@ Mini2ServiceImpl::Mini2ServiceImpl(
       port_(port),
       job_queue_(node_id, [this](JobType type, const QueryRequest& request) {
           return ProcessJob(type, request);
+      }, [this](const InsertRequest& request) {
+          return ProcessInsertJob(request);
       }),
       forward_cache_(node_id, enable_cache) {}
 
@@ -139,6 +162,13 @@ void Mini2ServiceImpl::SetPeers(const std::vector<PeerInfo>& peers) {
 
         connected_peers_.push_back(std::move(connected_peer));
     }
+}
+
+void Mini2ServiceImpl::SetInsertRoutes(
+    const std::vector<InsertRoute>& routes,
+    const std::string& default_node_id) {
+    insert_routes_ = routes;
+    default_insert_node_id_ = default_node_id;
 }
 
 Status Mini2ServiceImpl::Ping(ServerContext* context, const PingRequest* request,
@@ -217,12 +247,100 @@ Status Mini2ServiceImpl::Forward(ServerContext* context, const QueryRequest* req
     }
 }
 
+Status Mini2ServiceImpl::Insert(ServerContext* context, const InsertRequest* request,
+                                InsertResponse* response) {
+    (void)context;
+    std::cout << "[" << node_id_ << "] Received Insert request: "
+              << request->request_id() << std::endl;
+
+    try {
+        InsertResponse result = job_queue_.EnqueueAndWait(*request);
+        *response = std::move(result);
+        return Status::OK;
+    } catch (const NoInsertRouteError& ex) {
+        std::cerr << "[" << node_id_ << "] Insert job failed: "
+                  << ex.what() << std::endl;
+        return Status(grpc::StatusCode::FAILED_PRECONDITION, ex.what());
+    } catch (const std::exception& ex) {
+        std::cerr << "[" << node_id_ << "] Insert job failed: "
+                  << ex.what() << std::endl;
+        return Status(grpc::StatusCode::INTERNAL, ex.what());
+    }
+}
+
+InsertResponse Mini2ServiceImpl::ProcessInsertJob(const InsertRequest& request) {
+    InsertRequest forwarded_request = request;
+    if (forwarded_request.target_node_id().empty()) {
+        forwarded_request.set_target_node_id(
+            ChooseLeafNodeForInsert(forwarded_request.record().created_date()));
+    }
+
+    if (node_id_ == forwarded_request.target_node_id()) {
+        InsertResponse response = StoreRecordLocally(forwarded_request);
+        forward_cache_.Clear();
+        return response;
+    }
+
+    if (connected_peers_.empty()) {
+        throw NoInsertRouteError(
+            "No route found for target node " + forwarded_request.target_node_id());
+    }
+
+    const std::string target_node_id = forwarded_request.target_node_id();
+
+    auto forward_to_peer = [&](const ConnectedPeer& peer, InsertResponse* peer_response) {
+        std::cout << "[" << node_id_ << "] Try Insert peer "
+                  << peer.id << " for target " << target_node_id
+                  << " request " << forwarded_request.request_id() << std::endl;
+
+        grpc::ClientContext peer_context;
+        peer_context.set_deadline(
+            std::chrono::system_clock::now() + std::chrono::seconds(5));
+
+        return peer.stub->Insert(&peer_context, forwarded_request, peer_response);
+    };
+
+    for (const auto& peer : connected_peers_) {
+        if (peer.id != target_node_id) {
+            continue;
+        }
+
+        InsertResponse peer_response;
+        grpc::Status status = forward_to_peer(peer, &peer_response);
+        if (status.ok()) {
+            peer_response.set_request_id(request.request_id());
+            peer_response.set_from_node(node_id_);
+            forward_cache_.Clear();
+            return peer_response;
+        }
+
+        throw std::runtime_error(
+            "Insert failed at peer " + peer.id + ": " + status.error_message());
+    }
+
+    for (const auto& peer : connected_peers_) {
+        InsertResponse peer_response;
+        grpc::Status status = forward_to_peer(peer, &peer_response);
+        if (status.ok()) {
+            peer_response.set_request_id(request.request_id());
+            peer_response.set_from_node(node_id_);
+            forward_cache_.Clear();
+            return peer_response;
+        }
+    }
+
+    throw NoInsertRouteError(
+        "No route found for target node " + target_node_id);
+}
+
 QueryResponse Mini2ServiceImpl::ProcessJob(JobType type, const QueryRequest& request) {
     switch (type) {
         case JobType::Query:
             return ProcessQueryJob(request);
         case JobType::Forward:
             return ProcessForwardJob(request);
+        case JobType::Insert:
+            break;
     }
 
     throw std::runtime_error("Unsupported queued job type");
@@ -234,6 +352,7 @@ QueryResponse Mini2ServiceImpl::ProcessQueryJob(const QueryRequest& request) {
     response.set_from_node(node_id_);
 
     std::size_t matched_record_count = 0;
+    std::lock_guard<std::mutex> lock(dataset_mutex_);
     for (const auto& record : dataset_.get_records()) {
         if (!MatchesQuery(record, request)) {
             continue;
@@ -261,6 +380,7 @@ QueryResponse Mini2ServiceImpl::ProcessForwardJob(const QueryRequest& request) {
     std::cout << "[" << node_id_ << "] Forward local search started: "
               << request_id << std::endl;
     auto local_future = std::async(std::launch::async, [this, &request]() {
+        std::lock_guard<std::mutex> lock(dataset_mutex_);
         return CollectLocalMatches(dataset_, request);
     });
 
@@ -290,8 +410,8 @@ QueryResponse Mini2ServiceImpl::ProcessForwardJob(const QueryRequest& request) {
     }
 
     LocalSearchResult local_result = local_future.get();
-    for (const auto* record : local_result.records) {
-        AppendRecord(*record, &response);
+    for (const auto& record : local_result.records) {
+        AppendRecord(record, &response);
     }
     std::cout << "[" << node_id_ << "] Forward local search completed: "
               << request_id << " (local_matched=" << local_result.matched_record_count << ")" << std::endl;
@@ -327,10 +447,10 @@ Status Mini2ServiceImpl::CountQuery(ServerContext* context, const SOACountReques
               << request->request_id() << std::endl;
     response->set_request_id(request->request_id());
     response->set_from_node(node_id_); // node itself, tracing purpose. reply sent back to the original requester 
-    QuerySOA query(dataset_soa_);
-
     uint64_t local_count = 0;
     try {
+        std::lock_guard<std::mutex> lock(dataset_mutex_);
+        QuerySOA query(dataset_soa_);
         switch (request->kind())
         {
         case mini2::SOA_COUNT_CREATED_DATE_RANGE:
@@ -392,4 +512,45 @@ Status Mini2ServiceImpl::CountQuery(ServerContext* context, const SOACountReques
     response->set_count(total_count);
     std::cout << "[" << node_id_ << "] CountQuery returning total count: " << total_count << std::endl;
     return Status::OK;
+}
+
+std::string Mini2ServiceImpl::ChooseLeafNodeForInsert(int64_t created_date) const {
+    for (const auto& route : insert_routes_) {
+        if (created_date <= route.max_created_date) {
+            return route.node_id;
+        }
+    }
+
+    return default_insert_node_id_;
+}
+
+InsertResponse Mini2ServiceImpl::StoreRecordLocally(const InsertRequest& request) {
+    const Record local_record = BuildLocalRecord(request.record());
+
+    {
+        std::lock_guard<std::mutex> lock(dataset_mutex_);
+        dataset_.append_record(local_record);
+        dataset_soa_.append_record(
+            local_record.id,
+            local_record.created_date,
+            local_record.closed_date,
+            local_record.agency_id,
+            local_record.problem_id,
+            local_record.status_id,
+            local_record.borough_id,
+            local_record.zip_code,
+            local_record.latitude,
+            local_record.longitude);
+    }
+
+    InsertResponse response;
+    response.set_request_id(request.request_id());
+    response.set_from_node(node_id_);
+    response.set_stored_at_node(node_id_);
+    response.set_inserted(true);
+
+    std::cout << "[" << node_id_ << "] Insert stored record id "
+              << local_record.id << " request "
+              << request.request_id() << std::endl;
+    return response;
 }

@@ -11,6 +11,7 @@
 #include <grpcpp/server_builder.h>
 #include <grpcpp/security/server_credentials.h>
 
+#include "InsertRouteConfig.h"
 #include "Mini2ServiceImpl.h"
 
 using grpc::Server;
@@ -97,6 +98,17 @@ void RunServer(const std::string& node_id)
 
         std::string server_address = host + ":" + std::to_string(port);
         Mini2ServiceImpl service(node_id, port, enable_cache);
+
+        const InsertRouteConfig insert_route_config =
+            LoadInsertRouteConfig(config, config_path);
+        if (insert_route_config.loaded()) {
+            service.SetInsertRoutes(
+                insert_route_config.routes,
+                insert_route_config.default_node_id);
+
+            std::cout << "Loaded insert routes from "
+                      << insert_route_config.path.string() << std::endl;
+        }
 
         if (config["peers"]) {
             std::vector<PeerInfo> peers;
