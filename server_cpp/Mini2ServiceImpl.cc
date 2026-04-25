@@ -558,6 +558,8 @@ InsertResponse Mini2ServiceImpl::StoreRecordLocally(const InsertRequest& request
               << local_record.id << " request "
               << request.request_id() << std::endl;
     return response;
+}
+
 Status Mini2ServiceImpl::StartForwardChunks(
     ServerContext* context, const QueryRequest* request,
     ChunkSessionResponse* response) {

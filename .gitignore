@@ -60,6 +60,7 @@ __pycache__/
 # Local datasets
 data/*.csv
 benchmarks/*.csv
+benchmarks/**/*.csv
 
 # Local logs
 server*.log
@@ -67,6 +68,7 @@ server*.log
 # IDE files
 .vscode/
 .idea/
+.claude/
 
 # Util files
 /benchmarks/generate_workload.py
