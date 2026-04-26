@@ -3,7 +3,9 @@
 
 #include <iostream>
 #include <memory>
+#include <chrono>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <yaml-cpp/yaml.h>
 
@@ -79,11 +81,30 @@ std::string ResolveOptionalPath(
     return (config_path.parent_path() / configured).string();
 }
 
+DatasetLoadMode ParseDatasetLoadMode(const YAML::Node& config) {
+    const std::string configured =
+        config["dataset_mode"] ? config["dataset_mode"].as<std::string>() : "both";
+
+    if (configured == "aos" || configured == "AOS") {
+        return DatasetLoadMode::AOS;
+    }
+    if (configured == "soa" || configured == "SOA") {
+        return DatasetLoadMode::SOA;
+    }
+    if (configured == "both" || configured == "Both" || configured == "BOTH") {
+        return DatasetLoadMode::Both;
+    }
+
+    throw std::runtime_error(
+        "Invalid dataset_mode '" + configured + "'. Expected aos, soa, or both.");
+}
+
 }  // namespace
 
 // ===== Server Startup =====
 void RunServer(const std::string& node_id)
 {
+    const auto server_start_begin = std::chrono::steady_clock::now();
     const fs::path config_path = ResolveConfigPath(node_id);
 
     try
@@ -131,9 +152,11 @@ void RunServer(const std::string& node_id)
                 ResolveOptionalPath(config, "borough_dict_path", config_path);
             const std::string status_dict_path =
                 ResolveOptionalPath(config, "status_dict_path", config_path);
+            const DatasetLoadMode dataset_load_mode = ParseDatasetLoadMode(config);
 
             if (!service.Initialize(
                     dataset_path.string(),
+                    dataset_load_mode,
                     agency_dict_path,
                     borough_dict_path,
                     status_dict_path)) {
@@ -149,10 +172,21 @@ void RunServer(const std::string& node_id)
         builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
         builder.RegisterService(&service);
         std::unique_ptr<Server> server(builder.BuildAndStart());
+        if (!server) {
+            std::cerr << "Node " << node_id
+                      << " failed to start gRPC server on "
+                      << server_address << std::endl;
+            return;
+        }
+
+        const double server_ready_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - server_start_begin).count();
 
         std::cout << "\n============================================" << std::endl;
         std::cout << "Mini2 gRPC Server started" << std::endl;
         std::cout << "[" << node_id << "] Server listening on " << server_address << std::endl;
+        std::cout << "[" << node_id << "] Cold start server ready in "
+                  << server_ready_ms << " ms" << std::endl;
         std::cout << "============================================\n" << std::endl;
 
         server->Wait();
