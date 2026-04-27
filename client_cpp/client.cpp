@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -11,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <grpcpp/channel.h>
 #include <grpcpp/client_context.h>
@@ -442,6 +444,19 @@ void EnsureOk(const grpc::Status& status) {
     }
 }
 
+template <typename ResponseT, typename RpcInvoker>
+std::future<std::pair<ResponseT, double>> SubmitUnaryRpc(RpcInvoker&& invoker) {
+    return std::async(std::launch::async, [rpc = std::forward<RpcInvoker>(invoker)]() mutable {
+        ResponseT response;
+        const auto start_rpc = Clock::now();
+        const grpc::Status status = rpc(response);
+        const double rpc_ms = std::chrono::duration<double, std::milli>(
+            Clock::now() - start_rpc).count();
+        EnsureOk(status);
+        return std::make_pair(std::move(response), rpc_ms);
+    });
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -471,65 +486,56 @@ int main(int argc, char** argv) {
             std::cout << "Ping request: \n";
             std::cout << "   request_id = " << request.request_id() << '\n';
 
-            PingResponse response;
-            grpc::ClientContext context;
-            ConfigureContext(context, options.timeout_seconds);
-            const auto start_rpc = Clock::now();
-            const grpc::Status status = stub->Ping(&context, request, &response);
-            const double rpc_ms = std::chrono::duration<double, std::milli>(
-                Clock::now() - start_rpc).count();
-            EnsureOk(status);
+            auto future = SubmitUnaryRpc<PingResponse>(
+                [&](PingResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    return stub->Ping(&context, request, &response);
+                });
+            const auto [response, rpc_ms] = future.get();
             PrintPingResponse(response, rpc_ms);
         } else if (options.command == "query" || options.command == "forward") {
             const QueryRequest request = BuildQueryRequest(options);
             PrintQueryRequest(request);
 
-            QueryResponse response;
-            grpc::ClientContext context;
-            ConfigureContext(context, options.timeout_seconds);
-            const auto start_rpc = Clock::now();
-            grpc::Status status;
-            if (options.command == "query") {
-                status = stub->Query(&context, request, &response);
-            } else {
-                status = stub->Forward(&context, request, &response);
-            }
-            const double rpc_ms = std::chrono::duration<double, std::milli>(
-                Clock::now() - start_rpc).count();
-            EnsureOk(status);
+            auto future = SubmitUnaryRpc<QueryResponse>(
+                [&](QueryResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    if (options.command == "query") {
+                        return stub->Query(&context, request, &response);
+                    }
+                    return stub->Forward(&context, request, &response);
+                });
+            const auto [response, rpc_ms] = future.get();
             PrintQueryResponse(options.command, response, rpc_ms);
         } else if (options.command == "insert") {
             const InsertRequest request = BuildInsertRequest(options);
             PrintInsertRequest(request);
 
-            InsertResponse response;
-            grpc::ClientContext context;
-            ConfigureContext(context, options.timeout_seconds);
-            const auto start_rpc = Clock::now();
-            const grpc::Status status = stub->Insert(&context, request, &response);
-            const double rpc_ms = std::chrono::duration<double, std::milli>(
-                Clock::now() - start_rpc).count();
-            EnsureOk(status);
+            auto future = SubmitUnaryRpc<InsertResponse>(
+                [&](InsertResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    return stub->Insert(&context, request, &response);
+                });
+            const auto [response, rpc_ms] = future.get();
             PrintInsertResponse(response, rpc_ms);
         } else if (options.command == "forward-chunked") {
             const QueryRequest request = BuildQueryRequest(options);
             PrintQueryRequest(request);
 
-            ChunkSessionResponse session_response;
-            grpc::ClientContext start_context;
-            ConfigureContext(start_context, options.timeout_seconds);
-
-            const auto start_rpc = Clock::now();
-            grpc::Status status = stub->StartForwardChunks(
-                &start_context,
-                request,
-                &session_response);
-            const double start_rpc_ms = std::chrono::duration<double, std::milli>(
-                Clock::now() - start_rpc).count();
-            EnsureOk(status);
+            auto session_future = SubmitUnaryRpc<ChunkSessionResponse>(
+                [&](ChunkSessionResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    return stub->StartForwardChunks(&context, request, &response);
+                });
+            const auto [session_response, start_rpc_ms] = session_future.get();
             PrintChunkSessionResponse(session_response, start_rpc_ms);
 
-            std::uint64_t total_records_received = 0;
+            std::vector<std::future<std::pair<QueryChunkResponse, double>>> chunk_futures;
+            chunk_futures.reserve(static_cast<std::size_t>(session_response.total_chunks()));
             for (std::uint32_t chunk_index = 0;
                  chunk_index < session_response.total_chunks();
                  ++chunk_index) {
@@ -537,19 +543,20 @@ int main(int argc, char** argv) {
                 chunk_request.set_session_id(session_response.session_id());
                 chunk_request.set_chunk_index(chunk_index);
 
-                QueryChunkResponse chunk_response;
-                grpc::ClientContext chunk_context;
-                ConfigureContext(chunk_context, options.timeout_seconds);
+                chunk_futures.push_back(SubmitUnaryRpc<QueryChunkResponse>(
+                    [&, chunk_request](QueryChunkResponse& chunk_response) mutable {
+                        grpc::ClientContext chunk_context;
+                        ConfigureContext(chunk_context, options.timeout_seconds);
+                        return stub->GetForwardChunk(
+                            &chunk_context,
+                            chunk_request,
+                            &chunk_response);
+                    }));
+            }
 
-                const auto start_chunk_rpc = Clock::now();
-                status = stub->GetForwardChunk(
-                    &chunk_context,
-                    chunk_request,
-                    &chunk_response);
-                const double chunk_rpc_ms = std::chrono::duration<double, std::milli>(
-                    Clock::now() - start_chunk_rpc).count();
-                EnsureOk(status);
-
+            std::uint64_t total_records_received = 0;
+            for (auto& chunk_future : chunk_futures) {
+                const auto [chunk_response, chunk_rpc_ms] = chunk_future.get();
                 total_records_received +=
                     static_cast<std::uint64_t>(chunk_response.records_size());
                 PrintChunkResponse(chunk_response, chunk_rpc_ms);
@@ -561,11 +568,14 @@ int main(int argc, char** argv) {
 
             ChunkCancelRequest cancel_request;
             cancel_request.set_session_id(session_response.session_id());
-            ChunkCancelResponse cancel_response;
-            grpc::ClientContext cancel_context;
-            ConfigureContext(cancel_context, options.timeout_seconds);
-            status = stub->CancelChunks(&cancel_context, cancel_request, &cancel_response);
-            EnsureOk(status);
+            auto cancel_future = SubmitUnaryRpc<ChunkCancelResponse>(
+                [&](ChunkCancelResponse& response) {
+                    grpc::ClientContext cancel_context;
+                    ConfigureContext(cancel_context, options.timeout_seconds);
+                    return stub->CancelChunks(&cancel_context, cancel_request, &response);
+                });
+            const auto [cancel_response, cancel_rpc_ms] = cancel_future.get();
+            static_cast<void>(cancel_rpc_ms);
 
             std::cout << "forward-chunked response:\n";
             std::cout << "   records_received = " << total_records_received << '\n';
@@ -577,15 +587,13 @@ int main(int argc, char** argv) {
             std::cout << "   created_date_start = " << request.created_date_start() << '\n';
             std::cout << "   created_date_end = " << request.created_date_end() << '\n';
 
-            SOACountResponse response;
-            grpc::ClientContext context;
-            ConfigureContext(context, options.timeout_seconds);
-
-            const auto start_rpc = Clock::now();
-            grpc::Status status = stub->CountQuery(&context, request, &response);
-            const double rpc_ms = std::chrono::duration<double, std::milli>(
-                Clock::now() - start_rpc).count();
-            EnsureOk(status);
+            auto future = SubmitUnaryRpc<SOACountResponse>(
+                [&](SOACountResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    return stub->CountQuery(&context, request, &response);
+                });
+            const auto [response, rpc_ms] = future.get();
             PrintCountResponse(response, rpc_ms);
         } else if (options.command == "count-by-agency-and-created-date-range") {
             const auto request = BuildCountByAgencyAndCreatedDateRangeRequest(options);
@@ -595,15 +603,13 @@ int main(int argc, char** argv) {
             std::cout << "   created_date_start = " << request.created_date_start() << '\n';
             std::cout << "   created_date_end = " << request.created_date_end() << '\n';
 
-            SOACountResponse response;
-            grpc::ClientContext context;
-            ConfigureContext(context, options.timeout_seconds);
-
-            const auto start_rpc = Clock::now();
-            grpc::Status status = stub->CountQuery(&context, request, &response);
-            const double rpc_ms = std::chrono::duration<double, std::milli>(
-                Clock::now() - start_rpc).count();
-            EnsureOk(status);
+            auto future = SubmitUnaryRpc<SOACountResponse>(
+                [&](SOACountResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    return stub->CountQuery(&context, request, &response);
+                });
+            const auto [response, rpc_ms] = future.get();
             PrintCountResponse(response, rpc_ms);
         } else if (options.command == "count-by-status-and-created-date-range") {
             const auto request = BuildCountByStatusAndCreatedDateRangeRequest(options);
@@ -612,15 +618,13 @@ int main(int argc, char** argv) {
             std::cout << "   created_date_start = " << request.created_date_start() << '\n';
             std::cout << "   created_date_end = " << request.created_date_end() << '\n';
 
-            SOACountResponse response;
-            grpc::ClientContext context;
-            ConfigureContext(context, options.timeout_seconds);
-
-            const auto start_rpc = Clock::now();
-            grpc::Status status = stub->CountQuery(&context, request, &response);
-            const double rpc_ms = std::chrono::duration<double, std::milli>(
-                Clock::now() - start_rpc).count();
-            EnsureOk(status);
+            auto future = SubmitUnaryRpc<SOACountResponse>(
+                [&](SOACountResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    return stub->CountQuery(&context, request, &response);
+                });
+            const auto [response, rpc_ms] = future.get();
             PrintCountResponse(response, rpc_ms);
         } else {
             ThrowUsageError("Unknown command: " + options.command);

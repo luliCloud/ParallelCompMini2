@@ -8,6 +8,7 @@ import argparse
 import sys
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import grpc
@@ -141,15 +142,25 @@ def connect(server_address: str, timeout: float):
     return channel, stub, connect_ms
 
 
-def run_ping(stub, args):
+def submit_unary_rpc(executor, rpc_method, request, timeout):
+    def invoke():
+        start_rpc = time.perf_counter()
+        response = rpc_method(request, timeout=timeout)
+        rpc_ms = (time.perf_counter() - start_rpc) * 1000
+        return response, rpc_ms
+
+    return executor.submit(invoke)
+
+
+def run_ping(stub, args, executor):
     request = build_ping_request(args)
 
     print("Ping request: ")
     print(f"   request_id = {request.request_id}")
 
-    start_ping = time.perf_counter()
-    response = stub.Ping(request, timeout=args.timeout)
-    ping_ms = (time.perf_counter() - start_ping) * 1000
+    response, ping_ms = submit_unary_rpc(
+        executor, stub.Ping, request, args.timeout
+    ).result()
 
     print_ping_response("ping", response, ping_ms)
     # dir(response)
@@ -319,58 +330,61 @@ def print_count_response(response, elapsed_ms):
     print(f"   count_query_rtt_ms = {elapsed_ms:.2f}")
 
 
-def run_query(stub, args):
+def run_query(stub, args, executor):
     request = build_query_request(args)
     print_query_request(request)
 
-    start_query = time.perf_counter()
-    response = stub.Query(request, timeout=args.timeout)
-    query_ms = (time.perf_counter() - start_query) * 1000
+    response, query_ms = submit_unary_rpc(
+        executor, stub.Query, request, args.timeout
+    ).result()
 
     print_query_response("query", response, query_ms)
 
 
-def run_forward(stub, args):
+def run_forward(stub, args, executor):
     request = build_query_request(args)
     print_query_request(request)
 
-    start_forward = time.perf_counter()
-    response = stub.Forward(request, timeout=args.timeout)
-    forward_ms = (time.perf_counter() - start_forward) * 1000
+    response, forward_ms = submit_unary_rpc(
+        executor, stub.Forward, request, args.timeout
+    ).result()
 
     print_query_response("forward", response, forward_ms)
 
 
-def run_insert(stub, args):
+def run_insert(stub, args, executor):
     request = build_insert_request(args)
     print_insert_request(request)
 
-    start_insert = time.perf_counter()
-    response = stub.Insert(request, timeout=args.timeout)
-    insert_ms = (time.perf_counter() - start_insert) * 1000
+    response, insert_ms = submit_unary_rpc(
+        executor, stub.Insert, request, args.timeout
+    ).result()
 
     print_insert_response(response, insert_ms)
 
 
-def run_forward_chunked(stub, args):
+def run_forward_chunked(stub, args, executor):
     request = build_query_request(args)
     print_query_request(request)
 
-    start_session = time.perf_counter()
-    session_response = stub.StartForwardChunks(request, timeout=args.timeout)
-    session_ms = (time.perf_counter() - start_session) * 1000
+    session_response, session_ms = submit_unary_rpc(
+        executor, stub.StartForwardChunks, request, args.timeout
+    ).result()
     print_chunk_session_response(session_response, session_ms)
 
-    total_records_received = 0
+    chunk_futures = []
     for chunk_index in range(session_response.total_chunks):
         chunk_request = mini2_pb2.ChunkRequest(
             session_id=session_response.session_id,
             chunk_index=chunk_index,
         )
+        chunk_futures.append(
+            submit_unary_rpc(executor, stub.GetForwardChunk, chunk_request, args.timeout)
+        )
 
-        start_chunk = time.perf_counter()
-        chunk_response = stub.GetForwardChunk(chunk_request, timeout=args.timeout)
-        chunk_ms = (time.perf_counter() - start_chunk) * 1000
+    total_records_received = 0
+    for future in chunk_futures:
+        chunk_response, chunk_ms = future.result()
 
         total_records_received += len(chunk_response.records)
         print_chunk_response(chunk_response, chunk_ms)
@@ -379,27 +393,29 @@ def run_forward_chunked(stub, args):
             break
 
     cancel_request = mini2_pb2.ChunkCancelRequest(session_id=session_response.session_id)
-    cancel_response = stub.CancelChunks(cancel_request, timeout=args.timeout)
+    cancel_response, _ = submit_unary_rpc(
+        executor, stub.CancelChunks, cancel_request, args.timeout
+    ).result()
 
     print("forward-chunked response:")
     print(f"   records_received = {total_records_received}")
     print(f"   session_cancelled = {cancel_response.cancelled}")
 
 
-def run_count_created_date_range(stub, args):
+def run_count_created_date_range(stub, args, executor):
     request = build_count_created_date_range_request(args)
     print("SOA Count Created Date Range request: ")
     print(f"   request_id = {request.request_id}")
     print(f"   created_date_start = {request.created_date_start}")
     print(f"   created_date_end = {request.created_date_end}")
 
-    start_count = time.perf_counter()
-    response = stub.CountQuery(request, timeout=args.timeout)
-    count_ms = (time.perf_counter() - start_count) * 1000
+    response, count_ms = submit_unary_rpc(
+        executor, stub.CountQuery, request, args.timeout
+    ).result()
     print_count_response(response, count_ms)
 
 
-def run_count_by_agency_and_created_date_range(stub, args):
+def run_count_by_agency_and_created_date_range(stub, args, executor):
     request = build_count_by_agency_created_date_range_request(args)
     print("SOA Count By Agency And Created Date Range request: ")
     print(f"   request_id = {request.request_id}")
@@ -407,22 +423,22 @@ def run_count_by_agency_and_created_date_range(stub, args):
     print(f"   created_date_start = {request.created_date_start}")
     print(f"   created_date_end = {request.created_date_end}")
 
-    start_count = time.perf_counter()
-    response = stub.CountQuery(request, timeout=args.timeout)
-    count_ms = (time.perf_counter() - start_count) * 1000
+    response, count_ms = submit_unary_rpc(
+        executor, stub.CountQuery, request, args.timeout
+    ).result()
     print_count_response(response, count_ms)
 
 
-def run_count_by_status_and_created_date_range(stub, args):
+def run_count_by_status_and_created_date_range(stub, args, executor):
     request = build_count_by_status_created_date_range_request(args)
     print("SOA Count By Status And Created Date Range request: ")
     print(f"   request_id = {request.request_id}")
     print(f"   created_date_start = {request.created_date_start}")
     print(f"   created_date_end = {request.created_date_end}")
 
-    start_count = time.perf_counter()
-    response = stub.CountQuery(request, timeout=args.timeout)
-    count_ms = (time.perf_counter() - start_count) * 1000
+    response, count_ms = submit_unary_rpc(
+        executor, stub.CountQuery, request, args.timeout
+    ).result()
     print_count_response(response, count_ms)
 
 
@@ -439,24 +455,25 @@ def run():
         print(f"   command = {args.command}")
         print(f"   connect_time_ms = {connect_ms:.2f}")
 
-        if args.command == "ping":
-            run_ping(stub, args)
-        elif args.command == "query":
-            run_query(stub, args)
-        elif args.command == "forward":
-            run_forward(stub, args)
-        elif args.command == "insert":
-            run_insert(stub, args)
-        elif args.command == "forward-chunked":
-            run_forward_chunked(stub, args)
-        elif args.command == "count-created-date-range":
-            run_count_created_date_range(stub, args)
-        elif args.command == "count-by-agency-and-created-date-range":
-            run_count_by_agency_and_created_date_range(stub, args)
-        elif args.command == "count-by-status-and-created-date-range":
-            run_count_by_status_and_created_date_range(stub, args)
-        else:
-            raise ValueError(f"Unknown command: {args.command}")
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            if args.command == "ping":
+                run_ping(stub, args, executor)
+            elif args.command == "query":
+                run_query(stub, args, executor)
+            elif args.command == "forward":
+                run_forward(stub, args, executor)
+            elif args.command == "insert":
+                run_insert(stub, args, executor)
+            elif args.command == "forward-chunked":
+                run_forward_chunked(stub, args, executor)
+            elif args.command == "count-created-date-range":
+                run_count_created_date_range(stub, args, executor)
+            elif args.command == "count-by-agency-and-created-date-range":
+                run_count_by_agency_and_created_date_range(stub, args, executor)
+            elif args.command == "count-by-status-and-created-date-range":
+                run_count_by_status_and_created_date_range(stub, args, executor)
+            else:
+                raise ValueError(f"Unknown command: {args.command}")
 
         total_ms = (time.perf_counter() - start_total) * 1000
         print(f"   total_time_ms = {total_ms:.2f}")
