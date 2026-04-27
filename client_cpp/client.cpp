@@ -36,6 +36,8 @@ using mini2::QueryRequest;
 using mini2::QueryResponse;
 using mini2::InsertRequest;
 using mini2::InsertResponse;
+using mini2::DeleteRequest;
+using mini2::DeleteResponse;
 // for SOA
 using mini2::SOACountKind;
 using mini2::SOACountRequest;
@@ -64,10 +66,12 @@ struct Options {
     std::optional<std::int64_t> created_date_start;
     std::optional<std::int64_t> created_date_end;
     std::optional<std::uint32_t> status_id; // 0 for In Progress, 1 for Closed
+    bool delete_all = false;
 };
 
 bool IsCommand(std::string_view token) {
     return token == "ping" || token == "query" || token == "forward" || token == "insert"
+        || token == "delete"
         || token == "forward-chunked"
         || token == "count-created-date-range"
         || token == "count-by-agency-and-created-date-range"
@@ -83,7 +87,7 @@ std::string GenerateRequestId(std::string_view prefix) {
 }
 
 [[noreturn]] void ThrowUsageError(const std::string& message) {
-    throw std::runtime_error(message + "\nUsage: client -s <host:port> [-t <seconds>] <ping|query|forward|forward-chunked> [options]");
+    throw std::runtime_error(message + "\nUsage: client -s <host:port> [-t <seconds>] <ping|query|forward|insert|delete|forward-chunked> [options]");
 }
 
 std::string RequireValue(int& index, int argc, char** argv, std::string_view flag) {
@@ -213,6 +217,8 @@ Options ParseArgs(int argc, char** argv) {
             options.created_date_end = ParseInt64(RequireValue(index, argc, argv, token), token);
         } else if (token == "--status-id") {
             options.status_id = ParseUint32(RequireValue(index, argc, argv, token), token);
+        } else if (token == "--all") {
+            options.delete_all = true;
         } else {
             ThrowUsageError("Unknown command option: " + token);
         }
@@ -263,6 +269,63 @@ InsertRequest BuildInsertRequest(const Options& options) {
     record->set_latitude(options.latitude.value_or(0.0f));
     record->set_longitude(options.longitude.value_or(0.0f));
 
+    return request;
+}
+
+DeleteRequest BuildDeleteRequest(const Options& options) {
+    DeleteRequest request;
+    request.set_request_id(options.request_id.value_or(GenerateRequestId("client-delete")));
+
+    bool has_filter = false;
+    if (options.record_id) {
+        request.set_record_id(*options.record_id);
+        has_filter = true;
+    }
+    if (options.created_date) {
+        request.set_created_date(*options.created_date);
+        has_filter = true;
+    }
+    if (options.closed_date) {
+        request.set_closed_date(*options.closed_date);
+        has_filter = true;
+    }
+    if (options.agency_id) {
+        request.set_agency_id(*options.agency_id);
+        has_filter = true;
+    }
+    if (options.problem_id) {
+        request.set_problem_id(*options.problem_id);
+        has_filter = true;
+    }
+    if (options.status_id) {
+        request.set_status_id(*options.status_id);
+        has_filter = true;
+    }
+    if (options.borough_id) {
+        request.set_borough_id(*options.borough_id);
+        has_filter = true;
+    }
+    if (options.zip_code) {
+        request.set_zip_code(*options.zip_code);
+        has_filter = true;
+    }
+    if (options.latitude) {
+        request.set_latitude(*options.latitude);
+        has_filter = true;
+    }
+    if (options.longitude) {
+        request.set_longitude(*options.longitude);
+        has_filter = true;
+    }
+
+    if (options.delete_all && has_filter) {
+        ThrowUsageError("--all cannot be combined with other delete filters");
+    }
+    if (!options.delete_all && !has_filter) {
+        ThrowUsageError("Delete requires at least one filter, or pass --all");
+    }
+
+    request.set_delete_all(options.delete_all);
     return request;
 }
 
@@ -431,6 +494,55 @@ void PrintInsertResponse(const InsertResponse& response, double elapsed_ms) {
     std::cout << "   insert_rtt_ms = " << elapsed_ms << '\n';
 }
 
+void PrintDeleteRequest(const DeleteRequest& request) {
+    std::cout << "delete request:\n";
+    std::cout << "   request_id = " << request.request_id() << '\n';
+    std::cout << "   delete_all = " << (request.delete_all() ? "true" : "false") << '\n';
+    if (request.has_record_id()) {
+        std::cout << "   record_id = " << request.record_id() << '\n';
+    }
+    if (request.has_created_date()) {
+        std::cout << "   created_date = " << request.created_date() << '\n';
+    }
+    if (request.has_closed_date()) {
+        std::cout << "   closed_date = " << request.closed_date() << '\n';
+    }
+    if (request.has_agency_id()) {
+        std::cout << "   agency_id = " << request.agency_id() << '\n';
+    }
+    if (request.has_problem_id()) {
+        std::cout << "   problem_id = " << request.problem_id() << '\n';
+    }
+    if (request.has_status_id()) {
+        std::cout << "   status_id = " << request.status_id() << '\n';
+    }
+    if (request.has_borough_id()) {
+        std::cout << "   borough_id = " << request.borough_id() << '\n';
+    }
+    if (request.has_zip_code()) {
+        std::cout << "   zip_code = " << request.zip_code() << '\n';
+    }
+    if (request.has_latitude()) {
+        std::cout << "   latitude = " << request.latitude() << '\n';
+    }
+    if (request.has_longitude()) {
+        std::cout << "   longitude = " << request.longitude() << '\n';
+    }
+}
+
+void PrintDeleteResponse(const DeleteResponse& response, double elapsed_ms) {
+    std::cout << "delete response:\n";
+    std::cout << "   response_request_id = " << response.request_id() << '\n';
+    std::uint64_t total_deleted = 0;
+    for (const auto& node_count : response.node_counts()) {
+        std::cout << "   node " << node_count.node_id()
+                  << " deleted = " << node_count.deleted_count() << '\n';
+        total_deleted += node_count.deleted_count();
+    }
+    std::cout << "   total_deleted = " << total_deleted << '\n';
+    std::cout << "   delete_rtt_ms = " << elapsed_ms << '\n';
+}
+
 void ConfigureContext(grpc::ClientContext& context, double timeout_seconds) {
     const auto timeout = std::chrono::duration_cast<std::chrono::system_clock::duration>(
         std::chrono::duration<double>(timeout_seconds));
@@ -521,6 +633,18 @@ int main(int argc, char** argv) {
                 });
             const auto [response, rpc_ms] = future.get();
             PrintInsertResponse(response, rpc_ms);
+        } else if (options.command == "delete") {
+            const DeleteRequest request = BuildDeleteRequest(options);
+            PrintDeleteRequest(request);
+
+            auto future = SubmitUnaryRpc<DeleteResponse>(
+                [&](DeleteResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    return stub->Delete(&context, request, &response);
+                });
+            const auto [response, rpc_ms] = future.get();
+            PrintDeleteResponse(response, rpc_ms);
         } else if (options.command == "forward-chunked") {
             const QueryRequest request = BuildQueryRequest(options);
             PrintQueryRequest(request);
@@ -645,6 +769,9 @@ int main(int argc, char** argv) {
 // ./build/bin/client -s localhost:50051 ping --request-id test-ping-1
 // ./build/bin/client -s localhost:50051 query --agency-id 1
 // ./build/bin/client -s localhost:50051 forward --borough-id 2
+// ./build/bin/client -s localhost:50051 delete --record-id 910001234
+// ./build/bin/client -s localhost:50051 delete --zip-code 11215 --borough-id 3
+// ./build/bin/client -s localhost:50051 delete --all
 
 /** distributed 
  * ./build/bin/client -s localhost:50051 count-created-date-range \

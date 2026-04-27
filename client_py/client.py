@@ -96,6 +96,28 @@ def parse_args():
     insert_parser.add_argument("--latitude", type=float, default=None)
     insert_parser.add_argument("--longitude", type=float, default=None)
 
+    delete_parser = subparsers.add_parser("delete", help="Send Delete request to the server")
+    delete_parser.add_argument(
+        "--request-id",
+        default=None,
+        help="Request ID for the delete request. If omitted, a random one is generated.",
+    )
+    delete_parser.add_argument("--record-id", type=int, default=None)
+    delete_parser.add_argument("--created-date", type=int, default=None)
+    delete_parser.add_argument("--closed-date", type=int, default=None)
+    delete_parser.add_argument("--agency-id", type=int, default=None)
+    delete_parser.add_argument("--problem-id", type=int, default=None)
+    delete_parser.add_argument("--status-id", type=int, default=None)
+    delete_parser.add_argument("--borough-id", type=int, default=None)
+    delete_parser.add_argument("--zip-code", type=int, default=None)
+    delete_parser.add_argument("--latitude", type=float, default=None)
+    delete_parser.add_argument("--longitude", type=float, default=None)
+    delete_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Delete all records cluster-wide. Cannot be combined with other filters.",
+    )
+
     chunked_parser = subparsers.add_parser("forward-chunked", help="Forward with chunked pull")
     chunked_parser.add_argument(
         "--request-id",
@@ -213,6 +235,52 @@ def build_insert_request(args):
     return request
 
 
+def build_delete_request(args):
+    request = mini2_pb2.DeleteRequest()
+    request.request_id = args.request_id or make_request_id("client-delete")
+
+    has_filter = False
+
+    if args.record_id is not None:
+        request.record_id = args.record_id
+        has_filter = True
+    if args.created_date is not None:
+        request.created_date = args.created_date
+        has_filter = True
+    if args.closed_date is not None:
+        request.closed_date = args.closed_date
+        has_filter = True
+    if args.agency_id is not None:
+        request.agency_id = args.agency_id
+        has_filter = True
+    if args.problem_id is not None:
+        request.problem_id = args.problem_id
+        has_filter = True
+    if args.status_id is not None:
+        request.status_id = args.status_id
+        has_filter = True
+    if args.borough_id is not None:
+        request.borough_id = args.borough_id
+        has_filter = True
+    if args.zip_code is not None:
+        request.zip_code = args.zip_code
+        has_filter = True
+    if args.latitude is not None:
+        request.latitude = args.latitude
+        has_filter = True
+    if args.longitude is not None:
+        request.longitude = args.longitude
+        has_filter = True
+
+    if args.all and has_filter:
+        raise ValueError("--all cannot be combined with other delete filters")
+    if not args.all and not has_filter:
+        raise ValueError("Delete requires at least one filter, or pass --all")
+
+    request.delete_all = args.all
+    return request
+
+
 def build_count_created_date_range_request(args):
     request = mini2_pb2.SOACountRequest()
     request.request_id = args.request_id or make_request_id("client-soa-count")
@@ -301,6 +369,43 @@ def print_insert_response(response, elapsed_ms):
     print(f"   insert_rtt_ms = {elapsed_ms:.2f}")
 
 
+def print_delete_request(request):
+    print("delete request:")
+    print(f"   request_id = {request.request_id}")
+    print(f"   delete_all = {request.delete_all}")
+    if request.HasField("record_id"):
+        print(f"   record_id = {request.record_id}")
+    if request.HasField("created_date"):
+        print(f"   created_date = {request.created_date}")
+    if request.HasField("closed_date"):
+        print(f"   closed_date = {request.closed_date}")
+    if request.HasField("agency_id"):
+        print(f"   agency_id = {request.agency_id}")
+    if request.HasField("problem_id"):
+        print(f"   problem_id = {request.problem_id}")
+    if request.HasField("status_id"):
+        print(f"   status_id = {request.status_id}")
+    if request.HasField("borough_id"):
+        print(f"   borough_id = {request.borough_id}")
+    if request.HasField("zip_code"):
+        print(f"   zip_code = {request.zip_code}")
+    if request.HasField("latitude"):
+        print(f"   latitude = {request.latitude}")
+    if request.HasField("longitude"):
+        print(f"   longitude = {request.longitude}")
+
+
+def print_delete_response(response, elapsed_ms):
+    print("delete response:")
+    print(f"   response_request_id = {response.request_id}")
+    total_deleted = 0
+    for node_count in sorted(response.node_counts, key=lambda item: item.node_id):
+        print(f"   node {node_count.node_id} deleted = {node_count.deleted_count}")
+        total_deleted += node_count.deleted_count
+    print(f"   total_deleted = {total_deleted}")
+    print(f"   delete_rtt_ms = {elapsed_ms:.2f}")
+
+
 def print_chunk_session_response(response, elapsed_ms):
     print("forward-chunked session:")
     print(f"   response_request_id = {response.request_id}")
@@ -361,6 +466,17 @@ def run_insert(stub, args, executor):
     ).result()
 
     print_insert_response(response, insert_ms)
+
+
+def run_delete(stub, args, executor):
+    request = build_delete_request(args)
+    print_delete_request(request)
+
+    response, delete_ms = submit_unary_rpc(
+        executor, stub.Delete, request, args.timeout
+    ).result()
+
+    print_delete_response(response, delete_ms)
 
 
 def run_forward_chunked(stub, args, executor):
@@ -464,6 +580,8 @@ def run():
                 run_forward(stub, args, executor)
             elif args.command == "insert":
                 run_insert(stub, args, executor)
+            elif args.command == "delete":
+                run_delete(stub, args, executor)
             elif args.command == "forward-chunked":
                 run_forward_chunked(stub, args, executor)
             elif args.command == "count-created-date-range":
@@ -500,3 +618,7 @@ if __name__ == "__main__":
 # python3 client_py/client.py -s localhost:50051 insert --record-id 1 --created-date 1770249600 --agency-id 1 --problem-id 2 --status-id 0 --borough-id 3
 # python3 client_py/client.py -s localhost:50051 forward-chunked --agency-id 1 --chunk-size 500
 # python3 client_py/client.py -s localhost:50051 count-created-date-range --created-date-start 1770249600 --created-date-end 1770335999
+# Deletion
+# python3 client_py/client.py -s localhost:50051 delete --record-id 910001234
+# python3 client_py/client.py -s localhost:50051 delete --zip-code 11215 --borough-id 3
+# python3 client_py/client.py -s localhost:50051 delete --all       # Delete all records

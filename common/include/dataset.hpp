@@ -4,6 +4,7 @@
  * TODO: Will do pre cleaning for phase 3
 */
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -41,6 +42,7 @@ public:
 
     const std::vector<Record>& get_records() const { return records_; }
     void append_record(const Record& record) { records_.push_back(record); }
+    std::size_t erase_records_by_indices(const std::vector<std::size_t>& indices);
 
     /** Retrieves the encoded ID for a specific attribute value.*/
     template <typename UInt>

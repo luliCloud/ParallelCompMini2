@@ -1,6 +1,8 @@
 #include "dataset.hpp"
 #include "csv_parser.hpp"
 #include "dataset_utils.hpp"
+
+#include <utility>
 /**
  * Malformed handeled rules:
  * 1. skip whole row if the number of fields is not correct or Unique Key is invalid (not a valid uint32_t).
@@ -157,6 +159,41 @@ bool Dataset::load_csv(
         records_.push_back(record);
     }
     return !records_.empty();
+}
+
+std::size_t Dataset::erase_records_by_indices(
+    const std::vector<std::size_t>& indices) {
+    if (indices.empty()) {
+        return 0;
+    }
+
+    std::vector<std::uint8_t> delete_mask(records_.size(), 0);
+    std::size_t removed_count = 0;
+
+    for (const std::size_t index : indices) {
+        if (index >= records_.size()) {
+            throw std::out_of_range("erase_records_by_indices index out of range");
+        }
+        if (delete_mask[index] != 0) {
+            continue;
+        }
+        delete_mask[index] = 1;
+        removed_count += 1;
+    }
+
+    std::size_t write_index = 0;
+    for (std::size_t read_index = 0; read_index < records_.size(); ++read_index) {
+        if (delete_mask[read_index] != 0) {
+            continue;
+        }
+        if (write_index != read_index) {
+            records_[write_index] = std::move(records_[read_index]);
+        }
+        write_index += 1;
+    }
+
+    records_.resize(write_index);
+    return removed_count;
 }
 
       

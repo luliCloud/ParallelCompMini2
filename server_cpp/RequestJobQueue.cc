@@ -11,7 +11,10 @@ const char* GetJobTypeName(JobType type) {
     if (type == JobType::Forward) {
         return "Forward";
     }
-    return "Insert";
+    if (type == JobType::Insert) {
+        return "Insert";
+    }
+    return "Delete";
 }
 
 }  // namespace
@@ -19,10 +22,12 @@ const char* GetJobTypeName(JobType type) {
 RequestJobQueue::RequestJobQueue(
     std::string node_id,
     QueryJobProcessor query_processor,
-    InsertJobProcessor insert_processor)
+    InsertJobProcessor insert_processor,
+    DeleteJobProcessor delete_processor)
     : node_id_(std::move(node_id)),
       query_processor_(std::move(query_processor)),
-      insert_processor_(std::move(insert_processor)) {
+      insert_processor_(std::move(insert_processor)),
+      delete_processor_(std::move(delete_processor)) {
     worker_thread_ = std::thread(&RequestJobQueue::WorkerLoop, this);
 }
 
@@ -84,6 +89,29 @@ InsertResponse RequestJobQueue::EnqueueAndWait(const InsertRequest& request) {
     return response_future.get();
 }
 
+DeleteResponse RequestJobQueue::EnqueueAndWait(const DeleteRequest& request) {
+    QueuedJob queued_job;
+    queued_job.type = JobType::Delete;
+    queued_job.delete_request = request;
+    std::future<DeleteResponse> response_future = queued_job.delete_promise.get_future();
+
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        queued_job.queue_order = next_queue_order_;
+        next_queue_order_ += 1;
+        request_queue_.push_back(std::move(queued_job));
+
+        const QueuedJob& last_queued_job = request_queue_.back();
+        std::cout << "Node " << node_id_
+                  << " enqueued Delete request " << request.request_id()
+                  << " queue_order " << last_queued_job.queue_order << std::endl;
+    }
+
+    queue_condition_.notify_one();
+
+    return response_future.get();
+}
+
 void RequestJobQueue::WorkerLoop() {
     while (true) {
         QueuedJob queued_job;
@@ -103,7 +131,9 @@ void RequestJobQueue::WorkerLoop() {
         const std::string request_id =
             queued_job.type == JobType::Insert
                 ? queued_job.insert_request.request_id()
-                : queued_job.query_request.request_id();
+                : (queued_job.type == JobType::Delete
+                       ? queued_job.delete_request.request_id()
+                       : queued_job.query_request.request_id());
         std::cout << "Node " << node_id_
                   << " worker processing " << GetJobTypeName(queued_job.type)
                   << " request " << request_id
@@ -113,6 +143,9 @@ void RequestJobQueue::WorkerLoop() {
             if (queued_job.type == JobType::Insert) {
                 InsertResponse response = insert_processor_(queued_job.insert_request);
                 queued_job.insert_promise.set_value(std::move(response));
+            } else if (queued_job.type == JobType::Delete) {
+                DeleteResponse response = delete_processor_(queued_job.delete_request);
+                queued_job.delete_promise.set_value(std::move(response));
             } else {
                 QueryResponse response =
                     query_processor_(queued_job.type, queued_job.query_request);
@@ -122,6 +155,8 @@ void RequestJobQueue::WorkerLoop() {
             try {
                 if (queued_job.type == JobType::Insert) {
                     queued_job.insert_promise.set_exception(std::current_exception());
+                } else if (queued_job.type == JobType::Delete) {
+                    queued_job.delete_promise.set_exception(std::current_exception());
                 } else {
                     queued_job.query_promise.set_exception(std::current_exception());
                 }

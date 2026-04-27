@@ -7,6 +7,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 bool DatasetSOA::load_csv(
@@ -238,4 +239,69 @@ void DatasetSOA::append_record(
     zip_code_.push_back(zip_code);
     latitude_.push_back(latitude);
     longitude_.push_back(longitude);
+}
+
+namespace {
+
+template <typename T>
+void CompactColumnByMask(std::vector<T>* column, const std::vector<std::uint8_t>& delete_mask) {
+    std::size_t write_index = 0;
+    for (std::size_t read_index = 0; read_index < column->size(); ++read_index) {
+        if (delete_mask[read_index] != 0) {
+            continue;
+        }
+        if (write_index != read_index) {
+            (*column)[write_index] = std::move((*column)[read_index]);
+        }
+        write_index += 1;
+    }
+    column->resize(write_index);
+}
+
+}  // namespace
+
+std::size_t DatasetSOA::erase_records_by_indices(
+    const std::vector<std::size_t>& indices) {
+    if (indices.empty()) {
+        return 0;
+    }
+
+    const std::size_t record_count = id_.size();
+    if (created_date_.size() != record_count ||
+        closed_date_.size() != record_count ||
+        agency_id_.size() != record_count ||
+        problem_id_.size() != record_count ||
+        status_id_.size() != record_count ||
+        borough_id_.size() != record_count ||
+        zip_code_.size() != record_count ||
+        latitude_.size() != record_count ||
+        longitude_.size() != record_count) {
+        throw std::runtime_error("DatasetSOA columns are out of sync");
+    }
+
+    std::vector<std::uint8_t> delete_mask(record_count, 0);
+    std::size_t removed_count = 0;
+    for (const std::size_t index : indices) {
+        if (index >= record_count) {
+            throw std::out_of_range("erase_records_by_indices index out of range");
+        }
+        if (delete_mask[index] != 0) {
+            continue;
+        }
+        delete_mask[index] = 1;
+        removed_count += 1;
+    }
+
+    CompactColumnByMask(&id_, delete_mask);
+    CompactColumnByMask(&created_date_, delete_mask);
+    CompactColumnByMask(&closed_date_, delete_mask);
+    CompactColumnByMask(&agency_id_, delete_mask);
+    CompactColumnByMask(&problem_id_, delete_mask);
+    CompactColumnByMask(&status_id_, delete_mask);
+    CompactColumnByMask(&borough_id_, delete_mask);
+    CompactColumnByMask(&zip_code_, delete_mask);
+    CompactColumnByMask(&latitude_, delete_mask);
+    CompactColumnByMask(&longitude_, delete_mask);
+
+    return removed_count;
 }

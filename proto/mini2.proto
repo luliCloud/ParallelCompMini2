@@ -9,6 +9,7 @@ service NodeService {
   rpc Query(QueryRequest)         returns (QueryResponse)         {}
   rpc Forward(QueryRequest)       returns (QueryResponse)         {}
   rpc Insert(InsertRequest)       returns (InsertResponse)        {}
+  rpc Delete(DeleteRequest)       returns (DeleteResponse)        {}
   rpc CountQuery(SOACountRequest) returns (SOACountResponse)      {}
   rpc GroupByQuery(SOAGroupByRequest) returns (SOAGroupByResponse) {}
   rpc TopKQuery(SOATopKRequest)   returns (SOATopKResponse)       {}
@@ -57,6 +58,31 @@ message InsertResponse {
   string from_node = 2;
   string stored_at_node = 3;
   bool inserted = 4;
+}
+
+message DeleteRequest {
+  string request_id = 1;
+  optional uint32 record_id = 2;
+  optional int64 created_date = 3;
+  optional int64 closed_date = 4;
+  optional uint32 agency_id = 5;
+  optional uint32 problem_id = 6;
+  optional uint32 status_id = 7;
+  optional uint32 borough_id = 8;
+  optional uint32 zip_code = 9;
+  optional float latitude = 10;
+  optional float longitude = 11;
+  bool delete_all = 12;
+}
+
+message NodeDeleteCount {
+  string node_id = 1;
+  uint64 deleted_count = 2;
+}
+
+message DeleteResponse {
+  string request_id = 1;
+  repeated NodeDeleteCount node_counts = 2;
 }
 
 /* This is the return of StartForwardChunks. 

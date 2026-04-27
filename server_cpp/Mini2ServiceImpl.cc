@@ -101,6 +101,64 @@ LocalSearchResult CollectLocalMatches(const Dataset& dataset,
 
     return result;
 }
+
+bool HasDeleteFilters(const DeleteRequest& request) {
+    return request.has_record_id() ||
+           request.has_created_date() ||
+           request.has_closed_date() ||
+           request.has_agency_id() ||
+           request.has_problem_id() ||
+           request.has_status_id() ||
+           request.has_borough_id() ||
+           request.has_zip_code() ||
+           request.has_latitude() ||
+           request.has_longitude();
+}
+
+bool MatchesDeleteFilter(const Record& record, const DeleteRequest& request) {
+    if (request.delete_all()) {
+        return true;
+    }
+
+    if (request.has_record_id() && record.id != request.record_id()) {
+        return false;
+    }
+    if (request.has_created_date() &&
+        record.created_date != request.created_date()) {
+        return false;
+    }
+    if (request.has_closed_date() &&
+        record.closed_date != request.closed_date()) {
+        return false;
+    }
+    if (request.has_agency_id() &&
+        static_cast<std::uint32_t>(record.agency_id) != request.agency_id()) {
+        return false;
+    }
+    if (request.has_problem_id() &&
+        record.problem_id != request.problem_id()) {
+        return false;
+    }
+    if (request.has_status_id() &&
+        static_cast<std::uint32_t>(record.status_id) != request.status_id()) {
+        return false;
+    }
+    if (request.has_borough_id() &&
+        static_cast<std::uint32_t>(record.borough_id) != request.borough_id()) {
+        return false;
+    }
+    if (request.has_zip_code() && record.zip_code != request.zip_code()) {
+        return false;
+    }
+    if (request.has_latitude() && record.latitude != request.latitude()) {
+        return false;
+    }
+    if (request.has_longitude() && record.longitude != request.longitude()) {
+        return false;
+    }
+
+    return true;
+}
 }  // namespace
 
 Mini2ServiceImpl::Mini2ServiceImpl(
@@ -113,6 +171,8 @@ Mini2ServiceImpl::Mini2ServiceImpl(
           return ProcessJob(type, request);
       }, [this](const InsertRequest& request) {
           return ProcessInsertJob(request);
+      }, [this](const DeleteRequest& request) {
+          return ProcessDeleteJob(request);
       }),
       forward_cache_(node_id, enable_cache) {}
 
@@ -273,6 +333,35 @@ Status Mini2ServiceImpl::Insert(ServerContext* context, const InsertRequest* req
     }
 }
 
+Status Mini2ServiceImpl::Delete(ServerContext* context, const DeleteRequest* request,
+                                DeleteResponse* response) {
+    (void)context;
+    std::cout << "[" << node_id_ << "] Received Delete request: "
+              << request->request_id() << std::endl;
+
+    const bool has_filters = HasDeleteFilters(*request);
+    if (!request->delete_all() && !has_filters) {
+        return Status(
+            grpc::StatusCode::INVALID_ARGUMENT,
+            "Delete requires at least one filter, or set delete_all=true");
+    }
+    if (request->delete_all() && has_filters) {
+        return Status(
+            grpc::StatusCode::INVALID_ARGUMENT,
+            "delete_all cannot be combined with attribute filters");
+    }
+
+    try {
+        DeleteResponse result = job_queue_.EnqueueAndWait(*request);
+        *response = std::move(result);
+        return Status::OK;
+    } catch (const std::exception& ex) {
+        std::cerr << "[" << node_id_ << "] Delete job failed: "
+                  << ex.what() << std::endl;
+        return Status(grpc::StatusCode::INTERNAL, ex.what());
+    }
+}
+
 InsertResponse Mini2ServiceImpl::ProcessInsertJob(const InsertRequest& request) {
     InsertRequest forwarded_request = request;
     if (forwarded_request.target_node_id().empty()) {
@@ -338,6 +427,59 @@ InsertResponse Mini2ServiceImpl::ProcessInsertJob(const InsertRequest& request) 
         "No route found for target node " + target_node_id);
 }
 
+DeleteResponse Mini2ServiceImpl::ProcessDeleteJob(const DeleteRequest& request) {
+    DeleteResponse response;
+    response.set_request_id(request.request_id());
+
+    const std::uint64_t local_deleted = DeleteMatchingRecordsLocally(request);
+    {
+        auto* node_count = response.add_node_counts();
+        node_count->set_node_id(node_id_);
+        node_count->set_deleted_count(local_deleted);
+    }
+    std::uint64_t total_deleted = local_deleted;
+
+    std::vector<std::future<DeleteResponse>> peer_response_futures;
+    for (const auto& peer : connected_peers_) {
+        auto* stub = peer.stub.get();
+        const std::string peer_id = peer.id;
+
+        peer_response_futures.push_back(std::async(
+            std::launch::async,
+            [request, stub, peer_id]() {
+                DeleteResponse peer_response;
+                grpc::ClientContext peer_context;
+                peer_context.set_deadline(
+                    std::chrono::system_clock::now() + std::chrono::seconds(5));
+
+                grpc::Status status = stub->Delete(&peer_context, request, &peer_response);
+                if (!status.ok()) {
+                    std::cout << "Failed to forward delete request to peer "
+                              << peer_id << ": " << status.error_code() << " "
+                              << status.error_message() << std::endl;
+                    DeleteResponse empty_response;
+                    empty_response.set_request_id(request.request_id());
+                    return empty_response;
+                }
+                return peer_response;
+            }));
+    }
+
+    for (auto& peer_response_future : peer_response_futures) {
+        DeleteResponse peer_response = peer_response_future.get();
+        for (const auto& node_count : peer_response.node_counts()) {
+            response.add_node_counts()->CopyFrom(node_count);
+            total_deleted += node_count.deleted_count();
+        }
+    }
+
+    if (total_deleted > 0) {
+        forward_cache_.Clear();
+    }
+
+    return response;
+}
+
 QueryResponse Mini2ServiceImpl::ProcessJob(JobType type, const QueryRequest& request) {
     switch (type) {
         case JobType::Query:
@@ -345,6 +487,7 @@ QueryResponse Mini2ServiceImpl::ProcessJob(JobType type, const QueryRequest& req
         case JobType::Forward:
             return ProcessForwardJob(request);
         case JobType::Insert:
+        case JobType::Delete:
             break;
     }
 
@@ -558,6 +701,37 @@ InsertResponse Mini2ServiceImpl::StoreRecordLocally(const InsertRequest& request
               << local_record.id << " request "
               << request.request_id() << std::endl;
     return response;
+}
+
+std::uint64_t Mini2ServiceImpl::DeleteMatchingRecordsLocally(
+    const DeleteRequest& request) {
+    std::lock_guard<std::mutex> lock(dataset_mutex_);
+
+    const auto& records = dataset_.get_records();
+    std::vector<std::size_t> matching_indices;
+    matching_indices.reserve(records.size());
+
+    for (std::size_t i = 0; i < records.size(); ++i) {
+        if (MatchesDeleteFilter(records[i], request)) {
+            matching_indices.push_back(i);
+        }
+    }
+
+    if (matching_indices.empty()) {
+        return 0;
+    }
+
+    const std::size_t deleted_from_aos =
+        dataset_.erase_records_by_indices(matching_indices);
+    const std::size_t deleted_from_soa =
+        dataset_soa_.erase_records_by_indices(matching_indices);
+    if (deleted_from_aos != deleted_from_soa) {
+        throw std::runtime_error("AOS and SOA delete counts diverged");
+    }
+
+    std::cout << "[" << node_id_ << "] Deleted " << deleted_from_aos
+              << " records for request " << request.request_id() << std::endl;
+    return static_cast<std::uint64_t>(deleted_from_aos);
 }
 
 Status Mini2ServiceImpl::StartForwardChunks(
