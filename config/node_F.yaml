@@ -2,7 +2,9 @@ node_id:      "F"
 host:         "0.0.0.0"
 port:         50056
 enable_cache: false
-dataset_path: "benchmarks/workload_100k_time_shards_6/workload_100k_shard_04.csv"
+dataset_mode: "aos"
+#dataset_path: "benchmarks/workload_100k_time_shards_6/workload_100k_shard_04.csv"
+dataset_path: "benchmarks/311_Service_Requests_from_2020_to_Present_20260210_sorted_time_shards_6/311_Service_Requests_from_2020_to_Present_20260210_shard_04.csv"
 agency_dict_path: "config/global_agency_ids.csv"
 borough_dict_path: "config/global_borough_ids.csv"
 status_dict_path: "config/global_status_ids.csv"

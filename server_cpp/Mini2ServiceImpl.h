@@ -1,7 +1,6 @@
 #pragma once
 
 #include <string>
-#include <mutex>
 #include <vector>
 #include <cstdint>
 #include <mutex>
@@ -54,6 +53,12 @@ struct ConnectedPeer {
     std::unique_ptr<mini2::NodeService::Stub> stub;
 };
 
+enum class DatasetLoadMode {
+    AOS,
+    SOA,
+    Both
+};
+
 // Mini2 Node Service Implementation
 class Mini2ServiceImpl final : public NodeService::Service {
 public:
@@ -66,6 +71,7 @@ public:
     // Initialization
     bool Initialize(
         const std::string& dataset_path,
+        DatasetLoadMode dataset_load_mode,
         const std::string& agency_dict_path = "",
         const std::string& borough_dict_path = "",
         const std::string& status_dict_path = "");
@@ -136,6 +142,7 @@ private:
 
     std::string node_id_;
     uint16_t port_;
+    DatasetLoadMode dataset_load_mode_ = DatasetLoadMode::Both;
     Dataset dataset_;
     std::vector<ConnectedPeer> connected_peers_;
     std::vector<InsertRoute> insert_routes_;
