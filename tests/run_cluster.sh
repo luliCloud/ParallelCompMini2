@@ -13,7 +13,7 @@ SERVER_EXEC="${BUILD_DIR}/bin/server"
 CLIENT_EXEC="${BUILD_DIR}/bin/client"
 LOG_DIR="/tmp/mini2_cluster_logs"
 
-SERVER_TIMEOUT=15
+SERVER_TIMEOUT="${SERVER_TIMEOUT:-300}"
 
 NODES=(A B C D E F G H I)
 PIDS=()
@@ -69,7 +69,7 @@ wait_for_node() {
             return 1
         fi
 
-        sleep 0.5
+        sleep 1
         elapsed=$((elapsed + 1))
     done
 

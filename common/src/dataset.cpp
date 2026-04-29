@@ -122,34 +122,43 @@ bool Dataset::load_csv(
         // check whether any field of this record already encoded into the dictionary, if not, we will add it to the dictionary. 
         // If the encoding fails (e.g., exceed the limit of uint type), we will roll back any changes to the dictionary 
         // and skip this row to keep the dictionary consistent with records_.
-        const bool agency_existed = (agency_dict_.find(row[idx_agency]) != agency_dict_.end());
-        const bool problem_existed = (problem_dict_.find(row[idx_problem]) != problem_dict_.end());
-        const bool status_existed = (status_dict_.find(row[idx_status]) != status_dict_.end());
-        const bool borough_existed = (borough_dict_.find(row[idx_borough]) != borough_dict_.end());
+        const std::string agency_value =
+            row[idx_agency].empty() ? "UNKNOWN" : row[idx_agency];
+        const std::string problem_value =
+            row[idx_problem].empty() ? "UNKNOWN" : row[idx_problem];
+        const std::string status_value =
+            row[idx_status].empty() ? "UNKNOWN" : row[idx_status];
+        const std::string borough_value =
+            row[idx_borough].empty() ? "UNKNOWN" : row[idx_borough];
+
+        const bool agency_existed = (agency_dict_.find(agency_value) != agency_dict_.end());
+        const bool problem_existed = (problem_dict_.find(problem_value) != problem_dict_.end());
+        const bool status_existed = (status_dict_.find(status_value) != status_dict_.end());
+        const bool borough_existed = (borough_dict_.find(borough_value) != borough_dict_.end());
 
         try {
             // encode_id<> : encode new {k, v} into dict
             record.agency_id = dataset_utils::lookup_or_encode_id<uint16_t>(
-                agency_dict_, row[idx_agency], use_predefined_agency, "Agency");
-            record.problem_id = dataset_utils::encode_id<uint32_t>(problem_dict_, row[idx_problem]);
+                agency_dict_, agency_value, use_predefined_agency, "Agency");
+            record.problem_id = dataset_utils::encode_id<uint32_t>(problem_dict_, problem_value);
             record.status_id = dataset_utils::lookup_or_encode_id<uint8_t>(
-                status_dict_, row[idx_status], use_predefined_status, "Status");
+                status_dict_, status_value, use_predefined_status, "Status");
             record.borough_id = dataset_utils::lookup_or_encode_id<uint8_t>(
-                borough_dict_, row[idx_borough], use_predefined_borough, "Borough");
+                borough_dict_, borough_value, use_predefined_borough, "Borough");
         } catch (const std::runtime_error& e) {
             // Roll back any values introduced by this row so dictionaries stay
             // consistent with records_ when we skip malformed rows.
             if (!use_predefined_agency && !agency_existed) { // agency_existed == false: no dict entry for this idx existed before. 
-                agency_dict_.erase(row[idx_agency]);
+                agency_dict_.erase(agency_value);
             }
             if (!problem_existed) {
-                problem_dict_.erase(row[idx_problem]);
+                problem_dict_.erase(problem_value);
             }
             if (!use_predefined_status && !status_existed) {
-                status_dict_.erase(row[idx_status]);
+                status_dict_.erase(status_value);
             }
             if (!use_predefined_borough && !borough_existed) {
-                borough_dict_.erase(row[idx_borough]);
+                borough_dict_.erase(borough_value);
             }
             std::cerr << "Encoding error at line " << line_num << ": " << e.what()
                       << ". Skipping row." << std::endl;

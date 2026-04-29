@@ -19,6 +19,14 @@ public:
 };
 constexpr std::uint32_t kDefaultChunkSize = 1000; // Default number of records per chunk for streaming
 
+bool LoadsAOS(DatasetLoadMode mode) {
+    return mode == DatasetLoadMode::AOS || mode == DatasetLoadMode::Both;
+}
+
+bool LoadsSOA(DatasetLoadMode mode) {
+    return mode == DatasetLoadMode::SOA || mode == DatasetLoadMode::Both;
+}
+
 bool MatchesQuery(const Record& record, const QueryRequest& request) {
     if (request.has_agency_id() &&
         record.agency_id != static_cast<uint16_t>(request.agency_id())) {
@@ -180,34 +188,64 @@ Mini2ServiceImpl::~Mini2ServiceImpl() = default;
 
 bool Mini2ServiceImpl::Initialize(
     const std::string& dataset_path,
+    DatasetLoadMode dataset_load_mode,
     const std::string& agency_dict_path,
     const std::string& borough_dict_path,
     const std::string& status_dict_path) {
     try {
-        if (!dataset_.load_csv(
-                dataset_path,
-                agency_dict_path,
-                borough_dict_path,
-                status_dict_path)) {
-            std::cerr << "Failed to load dataset from " << dataset_path 
-                      << " at node: " << node_id_ << std::endl;
-            return false;
-        }
-        std::cout << "[" << node_id_ << "] Loaded " << dataset_.size()
-                  << " records" << std::endl;
+        dataset_load_mode_ = dataset_load_mode;
+        const auto cold_start_begin = std::chrono::steady_clock::now();
 
-        if (!dataset_soa_.load_csv(
-                dataset_path,
-                agency_dict_path,
-                borough_dict_path,
-                status_dict_path)) {
-            std::cerr << "Failed to load dataset for SOA from " << dataset_path 
-                      << " at node: " << node_id_ << std::endl;
-            return false;
+        std::cout << "[" << node_id_ << "] Dataset load mode = ";
+        if (dataset_load_mode_ == DatasetLoadMode::AOS) {
+            std::cout << "aos";
+        } else if (dataset_load_mode_ == DatasetLoadMode::SOA) {
+            std::cout << "soa";
+        } else {
+            std::cout << "both";
         }
-        std::cout << "[" << node_id_ << "] Loaded dataset for SOA with " << dataset_soa_.size()
-                  << " records" << std::endl;
-        /** TODO: Need to remove AOS load later to avoid memory overflow */          
+        std::cout << std::endl;
+
+        if (LoadsAOS(dataset_load_mode_)) {
+            const auto aos_begin = std::chrono::steady_clock::now();
+            if (!dataset_.load_csv(
+                    dataset_path,
+                    agency_dict_path,
+                    borough_dict_path,
+                    status_dict_path)) {
+                std::cerr << "Failed to load AOS dataset from " << dataset_path 
+                          << " at node: " << node_id_ << std::endl;
+                return false;
+            }
+            const double aos_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - aos_begin).count();
+            std::cout << "[" << node_id_ << "] Loaded AOS dataset with "
+                      << dataset_.size() << " records in "
+                      << aos_ms << " ms" << std::endl;
+        }
+
+        if (LoadsSOA(dataset_load_mode_)) {
+            const auto soa_begin = std::chrono::steady_clock::now();
+            if (!dataset_soa_.load_csv(
+                    dataset_path,
+                    agency_dict_path,
+                    borough_dict_path,
+                    status_dict_path)) {
+                std::cerr << "Failed to load SOA dataset from " << dataset_path 
+                          << " at node: " << node_id_ << std::endl;
+                return false;
+            }
+            const double soa_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - soa_begin).count();
+            std::cout << "[" << node_id_ << "] Loaded SOA dataset with "
+                      << dataset_soa_.size() << " records in "
+                      << soa_ms << " ms" << std::endl;
+        }
+
+        const double cold_start_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - cold_start_begin).count();
+        std::cout << "[" << node_id_ << "] Cold start dataset load completed in "
+                  << cold_start_ms << " ms" << std::endl;
         return true;
     } catch (const std::exception& ex) {
         std::cerr << "Exception while loading dataset at node: " << node_id_
@@ -287,6 +325,11 @@ Status Mini2ServiceImpl::Query(ServerContext* context, const QueryRequest* reque
               << request->request_id() << std::endl;
 
     try {
+        if (!LoadsAOS(dataset_load_mode_)) {
+            return Status(
+                grpc::StatusCode::FAILED_PRECONDITION,
+                "Query requires dataset_mode aos or both");
+        }
         QueryResponse result = job_queue_.EnqueueAndWait(JobType::Query, *request);
         *response = std::move(result);
         return Status::OK;
@@ -303,6 +346,11 @@ Status Mini2ServiceImpl::Forward(ServerContext* context, const QueryRequest* req
               << request->request_id() << std::endl;
 
     try {
+        if (!LoadsAOS(dataset_load_mode_)) {
+            return Status(
+                grpc::StatusCode::FAILED_PRECONDITION,
+                "Forward requires dataset_mode aos or both");
+        }
         QueryResponse result = job_queue_.EnqueueAndWait(JobType::Forward, *request);
         *response = std::move(result);
         return Status::OK;
@@ -319,6 +367,11 @@ Status Mini2ServiceImpl::Insert(ServerContext* context, const InsertRequest* req
               << request->request_id() << std::endl;
 
     try {
+        if (!LoadsAOS(dataset_load_mode_)) {
+            return Status(
+                grpc::StatusCode::FAILED_PRECONDITION,
+                "Insert requires dataset_mode aos or both");
+        }
         InsertResponse result = job_queue_.EnqueueAndWait(*request);
         *response = std::move(result);
         return Status::OK;
@@ -595,6 +648,12 @@ Status Mini2ServiceImpl::CountQuery(ServerContext* context, const SOACountReques
               << request->request_id() << std::endl;
     response->set_request_id(request->request_id());
     response->set_from_node(node_id_); // node itself, tracing purpose. reply sent back to the original requester 
+    if (!LoadsSOA(dataset_load_mode_)) {
+        return Status(
+            grpc::StatusCode::FAILED_PRECONDITION,
+            "CountQuery requires dataset_mode soa or both");
+    }
+
     uint64_t local_count = 0;
     try {
         std::lock_guard<std::mutex> lock(dataset_mutex_);
@@ -678,17 +737,19 @@ InsertResponse Mini2ServiceImpl::StoreRecordLocally(const InsertRequest& request
     {
         std::lock_guard<std::mutex> lock(dataset_mutex_);
         dataset_.append_record(local_record);
-        dataset_soa_.append_record(
-            local_record.id,
-            local_record.created_date,
-            local_record.closed_date,
-            local_record.agency_id,
-            local_record.problem_id,
-            local_record.status_id,
-            local_record.borough_id,
-            local_record.zip_code,
-            local_record.latitude,
-            local_record.longitude);
+        if (LoadsSOA(dataset_load_mode_)) {
+            dataset_soa_.append_record(
+                local_record.id,
+                local_record.created_date,
+                local_record.closed_date,
+                local_record.agency_id,
+                local_record.problem_id,
+                local_record.status_id,
+                local_record.borough_id,
+                local_record.zip_code,
+                local_record.latitude,
+                local_record.longitude);
+        }
     }
 
     InsertResponse response;
@@ -743,24 +804,28 @@ Status Mini2ServiceImpl::StartForwardChunks(
         request->has_chunk_size() && request->chunk_size() > 0
             ? request->chunk_size()
             : kDefaultChunkSize;  
+
+    if (!LoadsAOS(dataset_load_mode_)) {
+        return Status(
+            grpc::StatusCode::FAILED_PRECONDITION,
+            "StartForwardChunks requires dataset_mode aos or both");
+    }
     
-    // fan-out. 
-    /** TODO: 1st version will get complete result internally, then return to client chunk by chunk
-     * 2nd version will stream chunks to client as soon as local search is done and peer responses start coming in, without waiting for the complete result. This will require more complex session and state management
-     */
     QueryResponse full_result = job_queue_.EnqueueAndWait(JobType::Forward, *request);
+    const std::uint64_t total_records =
+        static_cast<std::uint64_t>(full_result.records_size());
+    const std::uint32_t total_chunks = total_records == 0
+        ? 0
+        : static_cast<std::uint32_t>((total_records + chunk_size - 1) / chunk_size);
 
-    const std::uint64_t total_records = full_result.records_size();
-    const std::uint32_t total_chunks = total_records == 0 ? 0 : static_cast<std::uint32_t>((total_records + chunk_size - 1) / chunk_size);
-
-    std::string session_id = CreateChunkSessionId(request->request_id());
+    const std::string session_id = CreateChunkSessionId(request->request_id());
 
     ChunkSession session;
     session.request_id = request->request_id();
     session.from_node = node_id_;
     session.total_chunks = total_chunks;
     session.chunk_size = chunk_size;
-
+    session.records.reserve(full_result.records_size());
     for (const auto& record : full_result.records()) {
         session.records.push_back(record);
     }
@@ -792,11 +857,14 @@ Status Mini2ServiceImpl::GetForwardChunk(
     }
 
     const ChunkSession& session = it->second;
-    const std::uint64_t start = static_cast<std::uint64_t>(request->chunk_index()) * session.chunk_size;
+    const std::uint64_t start =
+        static_cast<std::uint64_t>(request->chunk_index()) * session.chunk_size;
     if (start >= session.records.size()) {
         return Status(grpc::StatusCode::OUT_OF_RANGE, "Chunk index out of range");
-    }   
-    const std::uint64_t end = std::min(start + session.chunk_size, static_cast<std::uint64_t>(session.records.size()));
+    }
+    const std::uint64_t end = std::min<std::uint64_t>(
+        start + session.chunk_size,
+        static_cast<std::uint64_t>(session.records.size()));
 
     response->set_request_id(session.request_id);
     response->set_session_id(request->session_id());
@@ -804,13 +872,15 @@ Status Mini2ServiceImpl::GetForwardChunk(
     response->set_chunk_index(request->chunk_index());
     response->set_chunk_size(session.chunk_size);
     response->set_total_chunks(session.total_chunks);
-    response->set_total_records(session.records.size());
+    response->set_total_records(
+        static_cast<std::uint64_t>(session.records.size()));
 
     for (std::uint64_t i = start; i < end; ++i) {
-        response->add_records()->CopyFrom(session.records[static_cast<std::size_t>(i)]); 
+        response->add_records()->CopyFrom(
+            session.records[static_cast<std::size_t>(i)]);
     }
 
-    response->set_done(request->chunk_index() + 1 >= session.total_chunks); // determine if this is the last chunk using >=
+    response->set_done(request->chunk_index() + 1 >= session.total_chunks);
     return Status::OK;
 }
 
