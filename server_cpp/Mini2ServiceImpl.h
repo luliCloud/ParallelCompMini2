@@ -25,6 +25,8 @@ using mini2::PingRequest;
 using mini2::PingResponse;
 using mini2::InsertRequest;
 using mini2::InsertResponse;
+using mini2::DeleteRequest;
+using mini2::DeleteResponse;
 
 // for SOA
 using mini2::SOACountKind;
@@ -94,6 +96,9 @@ public:
     Status Insert(ServerContext* context, const InsertRequest* request,
                   InsertResponse* response) override;
 
+    Status Delete(ServerContext* context, const DeleteRequest* request,
+                  DeleteResponse* response) override;
+
     Status CountQuery(ServerContext* context, const SOACountRequest* request, 
                       SOACountResponse* response) override;
 
@@ -123,8 +128,11 @@ private:
     QueryResponse ProcessJob(JobType type, const QueryRequest& request);
     // Execute insert routing or local insert for an Insert job.
     InsertResponse ProcessInsertJob(const InsertRequest& request);
+    // Execute broadcast delete and aggregate per-node delete counts.
+    DeleteResponse ProcessDeleteJob(const DeleteRequest& request);
     std::string ChooseLeafNodeForInsert(int64_t created_date) const;
     InsertResponse StoreRecordLocally(const InsertRequest& request);
+    std::uint64_t DeleteMatchingRecordsLocally(const DeleteRequest& request);
 
     // Streaming helper methods
     std::string CreateChunkSessionId(const std::string& request_id) const;

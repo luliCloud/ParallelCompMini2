@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -11,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <grpcpp/channel.h>
 #include <grpcpp/client_context.h>
@@ -34,6 +36,8 @@ using mini2::QueryRequest;
 using mini2::QueryResponse;
 using mini2::InsertRequest;
 using mini2::InsertResponse;
+using mini2::DeleteRequest;
+using mini2::DeleteResponse;
 // for SOA
 using mini2::SOACountKind;
 using mini2::SOACountRequest;
@@ -62,10 +66,12 @@ struct Options {
     std::optional<std::int64_t> created_date_start;
     std::optional<std::int64_t> created_date_end;
     std::optional<std::uint32_t> status_id; // 0 for In Progress, 1 for Closed
+    bool delete_all = false;
 };
 
 bool IsCommand(std::string_view token) {
     return token == "ping" || token == "query" || token == "forward" || token == "insert"
+        || token == "delete"
         || token == "forward-chunked"
         || token == "count-created-date-range"
         || token == "count-by-agency-and-created-date-range"
@@ -81,7 +87,7 @@ std::string GenerateRequestId(std::string_view prefix) {
 }
 
 [[noreturn]] void ThrowUsageError(const std::string& message) {
-    throw std::runtime_error(message + "\nUsage: client -s <host:port> [-t <seconds>] <ping|query|forward|forward-chunked> [options]");
+    throw std::runtime_error(message + "\nUsage: client -s <host:port> [-t <seconds>] <ping|query|forward|insert|delete|forward-chunked> [options]");
 }
 
 std::string RequireValue(int& index, int argc, char** argv, std::string_view flag) {
@@ -211,6 +217,8 @@ Options ParseArgs(int argc, char** argv) {
             options.created_date_end = ParseInt64(RequireValue(index, argc, argv, token), token);
         } else if (token == "--status-id") {
             options.status_id = ParseUint32(RequireValue(index, argc, argv, token), token);
+        } else if (token == "--all") {
+            options.delete_all = true;
         } else {
             ThrowUsageError("Unknown command option: " + token);
         }
@@ -261,6 +269,63 @@ InsertRequest BuildInsertRequest(const Options& options) {
     record->set_latitude(options.latitude.value_or(0.0f));
     record->set_longitude(options.longitude.value_or(0.0f));
 
+    return request;
+}
+
+DeleteRequest BuildDeleteRequest(const Options& options) {
+    DeleteRequest request;
+    request.set_request_id(options.request_id.value_or(GenerateRequestId("client-delete")));
+
+    bool has_filter = false;
+    if (options.record_id) {
+        request.set_record_id(*options.record_id);
+        has_filter = true;
+    }
+    if (options.created_date) {
+        request.set_created_date(*options.created_date);
+        has_filter = true;
+    }
+    if (options.closed_date) {
+        request.set_closed_date(*options.closed_date);
+        has_filter = true;
+    }
+    if (options.agency_id) {
+        request.set_agency_id(*options.agency_id);
+        has_filter = true;
+    }
+    if (options.problem_id) {
+        request.set_problem_id(*options.problem_id);
+        has_filter = true;
+    }
+    if (options.status_id) {
+        request.set_status_id(*options.status_id);
+        has_filter = true;
+    }
+    if (options.borough_id) {
+        request.set_borough_id(*options.borough_id);
+        has_filter = true;
+    }
+    if (options.zip_code) {
+        request.set_zip_code(*options.zip_code);
+        has_filter = true;
+    }
+    if (options.latitude) {
+        request.set_latitude(*options.latitude);
+        has_filter = true;
+    }
+    if (options.longitude) {
+        request.set_longitude(*options.longitude);
+        has_filter = true;
+    }
+
+    if (options.delete_all && has_filter) {
+        ThrowUsageError("--all cannot be combined with other delete filters");
+    }
+    if (!options.delete_all && !has_filter) {
+        ThrowUsageError("Delete requires at least one filter, or pass --all");
+    }
+
+    request.set_delete_all(options.delete_all);
     return request;
 }
 
@@ -429,6 +494,55 @@ void PrintInsertResponse(const InsertResponse& response, double elapsed_ms) {
     std::cout << "   insert_rtt_ms = " << elapsed_ms << '\n';
 }
 
+void PrintDeleteRequest(const DeleteRequest& request) {
+    std::cout << "delete request:\n";
+    std::cout << "   request_id = " << request.request_id() << '\n';
+    std::cout << "   delete_all = " << (request.delete_all() ? "true" : "false") << '\n';
+    if (request.has_record_id()) {
+        std::cout << "   record_id = " << request.record_id() << '\n';
+    }
+    if (request.has_created_date()) {
+        std::cout << "   created_date = " << request.created_date() << '\n';
+    }
+    if (request.has_closed_date()) {
+        std::cout << "   closed_date = " << request.closed_date() << '\n';
+    }
+    if (request.has_agency_id()) {
+        std::cout << "   agency_id = " << request.agency_id() << '\n';
+    }
+    if (request.has_problem_id()) {
+        std::cout << "   problem_id = " << request.problem_id() << '\n';
+    }
+    if (request.has_status_id()) {
+        std::cout << "   status_id = " << request.status_id() << '\n';
+    }
+    if (request.has_borough_id()) {
+        std::cout << "   borough_id = " << request.borough_id() << '\n';
+    }
+    if (request.has_zip_code()) {
+        std::cout << "   zip_code = " << request.zip_code() << '\n';
+    }
+    if (request.has_latitude()) {
+        std::cout << "   latitude = " << request.latitude() << '\n';
+    }
+    if (request.has_longitude()) {
+        std::cout << "   longitude = " << request.longitude() << '\n';
+    }
+}
+
+void PrintDeleteResponse(const DeleteResponse& response, double elapsed_ms) {
+    std::cout << "delete response:\n";
+    std::cout << "   response_request_id = " << response.request_id() << '\n';
+    std::uint64_t total_deleted = 0;
+    for (const auto& node_count : response.node_counts()) {
+        std::cout << "   node " << node_count.node_id()
+                  << " deleted = " << node_count.deleted_count() << '\n';
+        total_deleted += node_count.deleted_count();
+    }
+    std::cout << "   total_deleted = " << total_deleted << '\n';
+    std::cout << "   delete_rtt_ms = " << elapsed_ms << '\n';
+}
+
 void ConfigureContext(grpc::ClientContext& context, double timeout_seconds) {
     const auto timeout = std::chrono::duration_cast<std::chrono::system_clock::duration>(
         std::chrono::duration<double>(timeout_seconds));
@@ -440,6 +554,19 @@ void EnsureOk(const grpc::Status& status) {
         throw std::runtime_error(
             "RPC failed: " + std::to_string(status.error_code()) + " - " + status.error_message());
     }
+}
+
+template <typename ResponseT, typename RpcInvoker>
+std::future<std::pair<ResponseT, double>> SubmitUnaryRpc(RpcInvoker&& invoker) {
+    return std::async(std::launch::async, [rpc = std::forward<RpcInvoker>(invoker)]() mutable {
+        ResponseT response;
+        const auto start_rpc = Clock::now();
+        const grpc::Status status = rpc(response);
+        const double rpc_ms = std::chrono::duration<double, std::milli>(
+            Clock::now() - start_rpc).count();
+        EnsureOk(status);
+        return std::make_pair(std::move(response), rpc_ms);
+    });
 }
 
 }  // namespace
@@ -471,65 +598,68 @@ int main(int argc, char** argv) {
             std::cout << "Ping request: \n";
             std::cout << "   request_id = " << request.request_id() << '\n';
 
-            PingResponse response;
-            grpc::ClientContext context;
-            ConfigureContext(context, options.timeout_seconds);
-            const auto start_rpc = Clock::now();
-            const grpc::Status status = stub->Ping(&context, request, &response);
-            const double rpc_ms = std::chrono::duration<double, std::milli>(
-                Clock::now() - start_rpc).count();
-            EnsureOk(status);
+            auto future = SubmitUnaryRpc<PingResponse>(
+                [&](PingResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    return stub->Ping(&context, request, &response);
+                });
+            const auto [response, rpc_ms] = future.get();
             PrintPingResponse(response, rpc_ms);
         } else if (options.command == "query" || options.command == "forward") {
             const QueryRequest request = BuildQueryRequest(options);
             PrintQueryRequest(request);
 
-            QueryResponse response;
-            grpc::ClientContext context;
-            ConfigureContext(context, options.timeout_seconds);
-            const auto start_rpc = Clock::now();
-            grpc::Status status;
-            if (options.command == "query") {
-                status = stub->Query(&context, request, &response);
-            } else {
-                status = stub->Forward(&context, request, &response);
-            }
-            const double rpc_ms = std::chrono::duration<double, std::milli>(
-                Clock::now() - start_rpc).count();
-            EnsureOk(status);
+            auto future = SubmitUnaryRpc<QueryResponse>(
+                [&](QueryResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    if (options.command == "query") {
+                        return stub->Query(&context, request, &response);
+                    }
+                    return stub->Forward(&context, request, &response);
+                });
+            const auto [response, rpc_ms] = future.get();
             PrintQueryResponse(options.command, response, rpc_ms);
         } else if (options.command == "insert") {
             const InsertRequest request = BuildInsertRequest(options);
             PrintInsertRequest(request);
 
-            InsertResponse response;
-            grpc::ClientContext context;
-            ConfigureContext(context, options.timeout_seconds);
-            const auto start_rpc = Clock::now();
-            const grpc::Status status = stub->Insert(&context, request, &response);
-            const double rpc_ms = std::chrono::duration<double, std::milli>(
-                Clock::now() - start_rpc).count();
-            EnsureOk(status);
+            auto future = SubmitUnaryRpc<InsertResponse>(
+                [&](InsertResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    return stub->Insert(&context, request, &response);
+                });
+            const auto [response, rpc_ms] = future.get();
             PrintInsertResponse(response, rpc_ms);
+        } else if (options.command == "delete") {
+            const DeleteRequest request = BuildDeleteRequest(options);
+            PrintDeleteRequest(request);
+
+            auto future = SubmitUnaryRpc<DeleteResponse>(
+                [&](DeleteResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    return stub->Delete(&context, request, &response);
+                });
+            const auto [response, rpc_ms] = future.get();
+            PrintDeleteResponse(response, rpc_ms);
         } else if (options.command == "forward-chunked") {
             const QueryRequest request = BuildQueryRequest(options);
             PrintQueryRequest(request);
 
-            ChunkSessionResponse session_response;
-            grpc::ClientContext start_context;
-            ConfigureContext(start_context, options.timeout_seconds);
-
-            const auto start_rpc = Clock::now();
-            grpc::Status status = stub->StartForwardChunks(
-                &start_context,
-                request,
-                &session_response);
-            const double start_rpc_ms = std::chrono::duration<double, std::milli>(
-                Clock::now() - start_rpc).count();
-            EnsureOk(status);
+            auto session_future = SubmitUnaryRpc<ChunkSessionResponse>(
+                [&](ChunkSessionResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    return stub->StartForwardChunks(&context, request, &response);
+                });
+            const auto [session_response, start_rpc_ms] = session_future.get();
             PrintChunkSessionResponse(session_response, start_rpc_ms);
 
-            std::uint64_t total_records_received = 0;
+            std::vector<std::future<std::pair<QueryChunkResponse, double>>> chunk_futures;
+            chunk_futures.reserve(static_cast<std::size_t>(session_response.total_chunks()));
             for (std::uint32_t chunk_index = 0;
                  chunk_index < session_response.total_chunks();
                  ++chunk_index) {
@@ -537,19 +667,20 @@ int main(int argc, char** argv) {
                 chunk_request.set_session_id(session_response.session_id());
                 chunk_request.set_chunk_index(chunk_index);
 
-                QueryChunkResponse chunk_response;
-                grpc::ClientContext chunk_context;
-                ConfigureContext(chunk_context, options.timeout_seconds);
+                chunk_futures.push_back(SubmitUnaryRpc<QueryChunkResponse>(
+                    [&, chunk_request](QueryChunkResponse& chunk_response) mutable {
+                        grpc::ClientContext chunk_context;
+                        ConfigureContext(chunk_context, options.timeout_seconds);
+                        return stub->GetForwardChunk(
+                            &chunk_context,
+                            chunk_request,
+                            &chunk_response);
+                    }));
+            }
 
-                const auto start_chunk_rpc = Clock::now();
-                status = stub->GetForwardChunk(
-                    &chunk_context,
-                    chunk_request,
-                    &chunk_response);
-                const double chunk_rpc_ms = std::chrono::duration<double, std::milli>(
-                    Clock::now() - start_chunk_rpc).count();
-                EnsureOk(status);
-
+            std::uint64_t total_records_received = 0;
+            for (auto& chunk_future : chunk_futures) {
+                const auto [chunk_response, chunk_rpc_ms] = chunk_future.get();
                 total_records_received +=
                     static_cast<std::uint64_t>(chunk_response.records_size());
                 PrintChunkResponse(chunk_response, chunk_rpc_ms);
@@ -561,11 +692,14 @@ int main(int argc, char** argv) {
 
             ChunkCancelRequest cancel_request;
             cancel_request.set_session_id(session_response.session_id());
-            ChunkCancelResponse cancel_response;
-            grpc::ClientContext cancel_context;
-            ConfigureContext(cancel_context, options.timeout_seconds);
-            status = stub->CancelChunks(&cancel_context, cancel_request, &cancel_response);
-            EnsureOk(status);
+            auto cancel_future = SubmitUnaryRpc<ChunkCancelResponse>(
+                [&](ChunkCancelResponse& response) {
+                    grpc::ClientContext cancel_context;
+                    ConfigureContext(cancel_context, options.timeout_seconds);
+                    return stub->CancelChunks(&cancel_context, cancel_request, &response);
+                });
+            const auto [cancel_response, cancel_rpc_ms] = cancel_future.get();
+            static_cast<void>(cancel_rpc_ms);
 
             std::cout << "forward-chunked response:\n";
             std::cout << "   records_received = " << total_records_received << '\n';
@@ -577,15 +711,13 @@ int main(int argc, char** argv) {
             std::cout << "   created_date_start = " << request.created_date_start() << '\n';
             std::cout << "   created_date_end = " << request.created_date_end() << '\n';
 
-            SOACountResponse response;
-            grpc::ClientContext context;
-            ConfigureContext(context, options.timeout_seconds);
-
-            const auto start_rpc = Clock::now();
-            grpc::Status status = stub->CountQuery(&context, request, &response);
-            const double rpc_ms = std::chrono::duration<double, std::milli>(
-                Clock::now() - start_rpc).count();
-            EnsureOk(status);
+            auto future = SubmitUnaryRpc<SOACountResponse>(
+                [&](SOACountResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    return stub->CountQuery(&context, request, &response);
+                });
+            const auto [response, rpc_ms] = future.get();
             PrintCountResponse(response, rpc_ms);
         } else if (options.command == "count-by-agency-and-created-date-range") {
             const auto request = BuildCountByAgencyAndCreatedDateRangeRequest(options);
@@ -595,15 +727,13 @@ int main(int argc, char** argv) {
             std::cout << "   created_date_start = " << request.created_date_start() << '\n';
             std::cout << "   created_date_end = " << request.created_date_end() << '\n';
 
-            SOACountResponse response;
-            grpc::ClientContext context;
-            ConfigureContext(context, options.timeout_seconds);
-
-            const auto start_rpc = Clock::now();
-            grpc::Status status = stub->CountQuery(&context, request, &response);
-            const double rpc_ms = std::chrono::duration<double, std::milli>(
-                Clock::now() - start_rpc).count();
-            EnsureOk(status);
+            auto future = SubmitUnaryRpc<SOACountResponse>(
+                [&](SOACountResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    return stub->CountQuery(&context, request, &response);
+                });
+            const auto [response, rpc_ms] = future.get();
             PrintCountResponse(response, rpc_ms);
         } else if (options.command == "count-by-status-and-created-date-range") {
             const auto request = BuildCountByStatusAndCreatedDateRangeRequest(options);
@@ -612,15 +742,13 @@ int main(int argc, char** argv) {
             std::cout << "   created_date_start = " << request.created_date_start() << '\n';
             std::cout << "   created_date_end = " << request.created_date_end() << '\n';
 
-            SOACountResponse response;
-            grpc::ClientContext context;
-            ConfigureContext(context, options.timeout_seconds);
-
-            const auto start_rpc = Clock::now();
-            grpc::Status status = stub->CountQuery(&context, request, &response);
-            const double rpc_ms = std::chrono::duration<double, std::milli>(
-                Clock::now() - start_rpc).count();
-            EnsureOk(status);
+            auto future = SubmitUnaryRpc<SOACountResponse>(
+                [&](SOACountResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    return stub->CountQuery(&context, request, &response);
+                });
+            const auto [response, rpc_ms] = future.get();
             PrintCountResponse(response, rpc_ms);
         } else {
             ThrowUsageError("Unknown command: " + options.command);
@@ -641,6 +769,9 @@ int main(int argc, char** argv) {
 // ./build/bin/client -s localhost:50051 ping --request-id test-ping-1
 // ./build/bin/client -s localhost:50051 query --agency-id 1
 // ./build/bin/client -s localhost:50051 forward --borough-id 2
+// ./build/bin/client -s localhost:50051 delete --record-id 910001234
+// ./build/bin/client -s localhost:50051 delete --zip-code 11215 --borough-id 3
+// ./build/bin/client -s localhost:50051 delete --all
 
 /** distributed 
  * ./build/bin/client -s localhost:50051 count-created-date-range \

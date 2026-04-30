@@ -41,6 +41,7 @@ public:
         uint32_t zip_code,
         float latitude,
         float longitude);
+    std::size_t erase_records_by_indices(const std::vector<std::size_t>& indices);
 
     /** TODO: if we already stored as vectorization, do we still need to have map to store these info? */
     template <typename UInt>

@@ -280,6 +280,118 @@ class Mini2TestClient:
 
         self.test("Insert", run_test)
 
+    def test_delete(self):
+        """Test Delete RPC and verify with Forward"""
+        print("\n[TEST 8] Delete Request")
+
+        def run_test():
+            suffix = time.time_ns() % 100000
+            record_id = 910000000 + suffix
+            zip_code = 97000 + (suffix % 1000)
+            created_date = 1770631498
+
+            before_request = mini2_pb2.QueryRequest()
+            before_request.request_id = f"test_delete_before_{suffix}"
+            before_request.zip_code = zip_code
+            before_response = self.stub.Forward(before_request, timeout=self.timeout)
+            before_count = len(before_response.records)
+
+            insert_request = mini2_pb2.InsertRequest()
+            insert_request.request_id = f"test_delete_insert_{suffix}"
+            insert_request.record.id = record_id
+            insert_request.record.created_date = created_date
+            insert_request.record.closed_date = 0
+            insert_request.record.agency_id = 0
+            insert_request.record.problem_id = 0
+            insert_request.record.status_id = 0
+            insert_request.record.borough_id = 0
+            insert_request.record.zip_code = zip_code
+            insert_request.record.latitude = 40.7
+            insert_request.record.longitude = -73.9
+            insert_response = self.stub.Insert(insert_request, timeout=self.timeout)
+            assert insert_response.inserted, "Insert setup for delete test failed"
+
+            after_insert_request = mini2_pb2.QueryRequest()
+            after_insert_request.request_id = f"test_delete_after_insert_{suffix}"
+            after_insert_request.zip_code = zip_code
+            after_insert_response = self.stub.Forward(
+                after_insert_request, timeout=self.timeout
+            )
+            after_insert_count = len(after_insert_response.records)
+            assert after_insert_count == before_count + 1, (
+                f"Expected {before_count + 1} records after setup insert, got {after_insert_count}"
+            )
+
+            delete_request = mini2_pb2.DeleteRequest()
+            delete_request.request_id = f"test_delete_{suffix}"
+            delete_request.record_id = record_id
+            delete_response = self.stub.Delete(delete_request, timeout=self.timeout)
+            assert delete_response.request_id == delete_request.request_id, (
+                "Delete request ID mismatch"
+            )
+
+            node_counts = {item.node_id: item.deleted_count for item in delete_response.node_counts}
+            if self.expected_nodes:
+                missing_nodes = sorted(self.expected_nodes - set(node_counts.keys()))
+                assert not missing_nodes, f"Missing node counts in delete response: {missing_nodes}"
+
+            total_deleted = sum(node_counts.values())
+            assert total_deleted == 1, f"Expected total_deleted=1, got {total_deleted}"
+
+            after_delete_request = mini2_pb2.QueryRequest()
+            after_delete_request.request_id = f"test_delete_after_{suffix}"
+            after_delete_request.zip_code = zip_code
+            after_delete_response = self.stub.Forward(
+                after_delete_request, timeout=self.timeout
+            )
+            after_delete_count = len(after_delete_response.records)
+            assert after_delete_count == before_count, (
+                f"Expected {before_count} records after delete, got {after_delete_count}"
+            )
+
+            delete_again_request = mini2_pb2.DeleteRequest()
+            delete_again_request.request_id = f"test_delete_again_{suffix}"
+            delete_again_request.record_id = record_id
+            delete_again_response = self.stub.Delete(
+                delete_again_request, timeout=self.timeout
+            )
+            total_deleted_again = sum(
+                item.deleted_count for item in delete_again_response.node_counts
+            )
+            assert total_deleted_again == 0, (
+                f"Expected second delete to remove 0 records, got {total_deleted_again}"
+            )
+
+            print(f"  Delete request ID: {delete_request.request_id}")
+            print(f"  Record ID: {record_id}")
+            print(f"  Zip code: {zip_code}")
+            print(f"  Records before insert: {before_count}")
+            print(f"  Records after insert: {after_insert_count}")
+            print(f"  Total deleted: {total_deleted}")
+            print(f"  Records after delete: {after_delete_count}")
+            print(f"  Total deleted on second attempt: {total_deleted_again}")
+
+        self.test("Delete", run_test)
+
+    def test_delete_requires_filter_or_all(self):
+        """Delete without filters and without delete_all should fail"""
+        print("\n[TEST 9] Delete Safety (empty filter rejected)")
+
+        def run_test():
+            request = mini2_pb2.DeleteRequest()
+            request.request_id = "test_delete_empty_filter_001"
+
+            try:
+                self.stub.Delete(request, timeout=self.timeout)
+                raise AssertionError("Expected INVALID_ARGUMENT for empty delete filter")
+            except grpc.RpcError as exc:
+                assert exc.code() == grpc.StatusCode.INVALID_ARGUMENT, (
+                    f"Expected INVALID_ARGUMENT, got {exc.code()}"
+                )
+                print(f"  Received expected error: {exc.code().name}")
+
+        self.test("Delete safety", run_test)
+
     def run_all_tests(self):
         """Run all test cases"""
         print("Mini2 gRPC Server - E2E Test Suite")
@@ -296,6 +408,8 @@ class Mini2TestClient:
             self.test_query_geographic()
             self.test_forward()
             self.test_insert()
+            self.test_delete()
+            self.test_delete_requires_filter_or_all()
         finally:
             self.close()
 
