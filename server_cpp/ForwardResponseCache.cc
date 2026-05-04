@@ -1,15 +1,41 @@
 #include "ForwardResponseCache.h"
 
+#include <algorithm>
+#include <cctype>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
+
+namespace {
+
+std::string NormalizeCachePolicy(std::string policy) {
+    std::transform(
+        policy.begin(),
+        policy.end(),
+        policy.begin(),
+        [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+
+    if (policy == "lru" || policy == "fifo") {
+        return policy;
+    }
+
+    throw std::invalid_argument(
+        "Invalid cache_policy '" + policy + "'. Expected lru or fifo.");
+}
+
+}  // namespace
 
 ForwardResponseCache::ForwardResponseCache(
     std::string node_id,
     bool enabled,
+    std::string policy,
     std::size_t max_entries)
     : node_id_(std::move(node_id)),
       enabled_(enabled),
+      policy_(NormalizeCachePolicy(std::move(policy))),
       max_entries_(max_entries) {}
 
 bool ForwardResponseCache::TryGet(
@@ -29,10 +55,11 @@ bool ForwardResponseCache::TryGet(
         return false;
     }
 
-    // Move a hit to the front so the least recently used entry stays at the back.
-    cache_order_.erase(cached_entry->second.order_position);
-    cache_order_.push_front(cache_key);
-    cached_entry->second.order_position = cache_order_.begin();
+    if (policy_ == "lru") {
+        cache_order_.erase(cached_entry->second.order_position);
+        cache_order_.push_front(cache_key);
+        cached_entry->second.order_position = cache_order_.begin();
+    }
 
     *response = cached_entry->second.response;
     // Cached payload is reused, but the response should still carry the current request ID.
@@ -48,6 +75,9 @@ void ForwardResponseCache::Store(
     const mini2::QueryRequest& request,
     const mini2::QueryResponse& response) {
     if (!enabled_) {
+        return;
+    }
+    if (max_entries_ == 0) {
         return;
     }
 

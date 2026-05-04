@@ -4,6 +4,7 @@
 #include <iostream>
 #include <memory>
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -99,6 +100,22 @@ DatasetLoadMode ParseDatasetLoadMode(const YAML::Node& config) {
         "Invalid dataset_mode '" + configured + "'. Expected aos, soa, or both.");
 }
 
+QueueMode ParseQueueMode(const YAML::Node& config) {
+    const std::string configured =
+        config["queue_mode"] ? config["queue_mode"].as<std::string>() : "fifo";
+
+    if (configured == "fifo" || configured == "FIFO") {
+        return QueueMode::FIFO;
+    }
+    if (configured == "priority" || configured == "Priority" ||
+        configured == "PRIORITY") {
+        return QueueMode::Priority;
+    }
+
+    throw std::runtime_error(
+        "Invalid queue_mode '" + configured + "'. Expected fifo or priority.");
+}
+
 }  // namespace
 
 // ===== Server Startup =====
@@ -116,9 +133,20 @@ void RunServer(const std::string& node_id)
         bool coordinator_only = config["coordinator_only"] && config["coordinator_only"].as<bool>();
         // Cache policy is configured per node in YAML instead of hardcoding node A in C++.
         bool enable_cache = config["enable_cache"] && config["enable_cache"].as<bool>();
+        std::string cache_policy =
+            config["cache_policy"] ? config["cache_policy"].as<std::string>() : "lru";
+        std::size_t cache_max_entries =
+            config["cache_max_entries"] ? config["cache_max_entries"].as<std::size_t>() : 32;
+        QueueMode queue_mode = ParseQueueMode(config);
 
         std::string server_address = host + ":" + std::to_string(port);
-        Mini2ServiceImpl service(node_id, port, enable_cache);
+        Mini2ServiceImpl service(
+            node_id,
+            port,
+            enable_cache,
+            cache_policy,
+            cache_max_entries,
+            queue_mode);
 
         const InsertRouteConfig insert_route_config =
             LoadInsertRouteConfig(config, config_path);

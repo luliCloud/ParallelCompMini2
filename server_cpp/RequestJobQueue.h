@@ -2,12 +2,14 @@
 
 #include <condition_variable>
 #include <cstddef>
-#include <deque>
 #include <functional>
 #include <future>
+#include <memory>
 #include <mutex>
+#include <queue>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "mini2.grpc.pb.h"
 
@@ -19,6 +21,7 @@ using mini2::DeleteRequest;
 using mini2::DeleteResponse;
 
 enum class JobType { Query, Forward, Insert, Delete };
+enum class QueueMode { FIFO, Priority };
 
 class RequestJobQueue {
 public:
@@ -28,6 +31,7 @@ public:
 
     RequestJobQueue(
         std::string node_id,
+        QueueMode queue_mode,
         QueryJobProcessor query_processor,
         InsertJobProcessor insert_processor,
         DeleteJobProcessor delete_processor);
@@ -47,15 +51,31 @@ private:
         std::promise<InsertResponse> insert_promise;
         std::promise<DeleteResponse> delete_promise;
         std::size_t queue_order = 0;
+        int priority = 0;
+        std::size_t scheduling_priority = 0;
+    };
+
+    struct QueuedJobCompare {
+        bool operator()(
+            const std::shared_ptr<QueuedJob>& left,
+            const std::shared_ptr<QueuedJob>& right) const;
     };
 
     void WorkerLoop();
+    std::shared_ptr<QueuedJob> PopNextJob();
+    int GetJobPriority(const QueuedJob& job) const;
+    int GetQueryPriority(const QueryRequest& request) const;
+    std::size_t GetSchedulingPriority(const QueuedJob& job) const;
 
     std::string node_id_;
+    QueueMode queue_mode_;
     QueryJobProcessor query_processor_;
     InsertJobProcessor insert_processor_;
     DeleteJobProcessor delete_processor_;
-    std::deque<QueuedJob> request_queue_;
+    std::priority_queue<
+        std::shared_ptr<QueuedJob>,
+        std::vector<std::shared_ptr<QueuedJob>>,
+        QueuedJobCompare> request_queue_;
     std::mutex queue_mutex_;
     std::condition_variable queue_condition_;
     std::thread worker_thread_;

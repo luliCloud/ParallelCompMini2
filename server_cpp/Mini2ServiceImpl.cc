@@ -172,17 +172,20 @@ bool MatchesDeleteFilter(const Record& record, const DeleteRequest& request) {
 Mini2ServiceImpl::Mini2ServiceImpl(
     const std::string& node_id,
     uint16_t port,
-    bool enable_cache)
+    bool enable_cache,
+    const std::string& cache_policy,
+    std::size_t cache_max_entries,
+    QueueMode queue_mode)
     : node_id_(node_id),
       port_(port),
-      job_queue_(node_id, [this](JobType type, const QueryRequest& request) {
+      job_queue_(node_id, queue_mode, [this](JobType type, const QueryRequest& request) {
           return ProcessJob(type, request);
       }, [this](const InsertRequest& request) {
           return ProcessInsertJob(request);
       }, [this](const DeleteRequest& request) {
           return ProcessDeleteJob(request);
       }),
-      forward_cache_(node_id, enable_cache) {}
+      forward_cache_(node_id, enable_cache, cache_policy, cache_max_entries) {}
 
 Mini2ServiceImpl::~Mini2ServiceImpl() = default;
 
