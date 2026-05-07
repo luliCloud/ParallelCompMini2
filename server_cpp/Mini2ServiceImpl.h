@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <unordered_map>
 
@@ -141,19 +142,17 @@ private:
 
     // Streaming helper methods
     std::string CreateChunkSessionId(const std::string& request_id) const;
-    bool WriteForwardStreamChunk(
-        ServerContext* context,
-        ServerWriter<QueryChunkResponse>* writer,
-        std::mutex* writer_mutex,
-        QueryChunkResponse* chunk);
     bool StreamLocalForwardChunks(
         ServerContext* context,
         const QueryRequest& request,
         std::uint32_t chunk_size,
-        ServerWriter<QueryChunkResponse>* writer,
-        std::mutex* writer_mutex,
-        std::mutex* chunk_index_mutex,
-        std::uint32_t* next_chunk_index,
+        const std::function<bool(QueryChunkResponse*)>& emit_chunk,
+        std::uint64_t* local_matched_record_count);
+    bool StreamBufferedLocalForwardChunks(
+        ServerContext* context,
+        const QueryRequest& request,
+        std::uint32_t chunk_size,
+        const std::function<bool(QueryChunkResponse*)>& emit_chunk,
         std::uint64_t* local_matched_record_count);
 
     struct ChunkSession {

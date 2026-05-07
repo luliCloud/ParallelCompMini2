@@ -70,6 +70,7 @@ struct Options {
     std::optional<std::uint32_t> status_id; // 0 for In Progress, 1 for Closed
     bool delete_all = false;
     bool quiet_chunks = false;
+    bool leaf_buffered_streaming = false;
 };
 
 bool IsCommand(std::string_view token) {
@@ -224,6 +225,8 @@ Options ParseArgs(int argc, char** argv) {
             options.delete_all = true;
         } else if (token == "--quiet-chunks") {
             options.quiet_chunks = true;
+        } else if (token == "--leaf-buffered-streaming") {
+            options.leaf_buffered_streaming = true;
         } else {
             ThrowUsageError("Unknown command option: " + token);
         }
@@ -361,6 +364,7 @@ QueryRequest BuildQueryRequest(const Options& options) {
     if (options.chunk_size) {
         request.set_chunk_size(*options.chunk_size);
     }
+    request.set_leaf_buffered_streaming(options.leaf_buffered_streaming);
     return request;
 }
 
@@ -428,6 +432,9 @@ void PrintQueryRequest(const QueryRequest& request) {
     }
     if (request.has_chunk_size()) {
         std::cout << "   chunk_size = " << request.chunk_size() << '\n';
+    }
+    if (request.leaf_buffered_streaming()) {
+        std::cout << "   leaf_buffered_streaming = true\n";
     }
 }
 
@@ -837,6 +844,7 @@ int main(int argc, char** argv) {
 // ./build/bin/client -s localhost:50051 query --agency-id 1
 // ./build/bin/client -s localhost:50051 forward --borough-id 2
 // ./build/bin/client -s localhost:50051 forward-stream --borough-id 2 --chunk-size 500
+// ./build/bin/client -s localhost:50051 forward-stream --agency-id 10 --chunk-size 5000 --leaf-buffered-streaming --quiet-chunks
 // ./build/bin/client -s localhost:50051 delete --record-id 910001234
 // ./build/bin/client -s localhost:50051 delete --zip-code 11215 --borough-id 3
 // ./build/bin/client -s localhost:50051 delete --all

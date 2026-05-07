@@ -36,6 +36,11 @@ def add_query_filters(parser, include_chunk_size: bool = False):
     parser.add_argument("--lon-max", type=float, default=None)
     if include_chunk_size:
         parser.add_argument("--chunk-size", type=int, default=None)
+        parser.add_argument(
+            "--leaf-buffered-streaming",
+            action="store_true",
+            help="ForwardStream: leaf nodes collect local matches first, then stream chunks.",
+        )
 
 
 def parse_args():
@@ -219,6 +224,8 @@ def build_query_request(args):
         request.lon_max = args.lon_max
     if getattr(args, "chunk_size", None) is not None:
         request.chunk_size = args.chunk_size
+    if getattr(args, "leaf_buffered_streaming", False):
+        request.leaf_buffered_streaming = True
 
     return request
 
@@ -340,6 +347,8 @@ def print_query_request(request):
         print(f"   lon_max = {request.lon_max}")
     if request.HasField("chunk_size"):
         print(f"   chunk_size = {request.chunk_size}")
+    if request.leaf_buffered_streaming:
+        print("   leaf_buffered_streaming = true")
 
 
 def print_query_response(label, response, elapsed_ms):

@@ -40,6 +40,7 @@ message QueryRequest {
   optional float  lon_min    = 7;
   optional float  lon_max    = 8;
   optional uint32 chunk_size = 9; // max records by each chunk
+  bool leaf_buffered_streaming = 10; // ForwardStream: leaf nodes collect local matches first, then stream chunks
 }
 
 message QueryResponse {
