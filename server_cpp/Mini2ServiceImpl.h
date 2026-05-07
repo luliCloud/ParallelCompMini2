@@ -3,10 +3,12 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <unordered_map>
 
 #include <grpcpp/server_context.h>
+#include <grpcpp/support/sync_stream.h>
 
 #include "ForwardResponseCache.h"
 #include "InsertRouteConfig.h"
@@ -17,6 +19,7 @@
 #include "query_SOA.hpp"
 
 using grpc::ServerContext;
+using grpc::ServerWriter;
 using grpc::Status;
 using mini2::NodeService;
 using mini2::QueryRequest;
@@ -93,6 +96,9 @@ public:
     Status Forward(ServerContext* context, const QueryRequest* request,
                    QueryResponse* response) override;
 
+    Status ForwardStream(ServerContext* context, const QueryRequest* request,
+                         ServerWriter<QueryChunkResponse>* writer) override;
+
     Status Insert(ServerContext* context, const InsertRequest* request,
                   InsertResponse* response) override;
 
@@ -136,6 +142,18 @@ private:
 
     // Streaming helper methods
     std::string CreateChunkSessionId(const std::string& request_id) const;
+    bool StreamLocalForwardChunks(
+        ServerContext* context,
+        const QueryRequest& request,
+        std::uint32_t chunk_size,
+        const std::function<bool(QueryChunkResponse*)>& emit_chunk,
+        std::uint64_t* local_matched_record_count);
+    bool StreamBufferedLocalForwardChunks(
+        ServerContext* context,
+        const QueryRequest& request,
+        std::uint32_t chunk_size,
+        const std::function<bool(QueryChunkResponse*)>& emit_chunk,
+        std::uint64_t* local_matched_record_count);
 
     struct ChunkSession {
         std::string request_id;

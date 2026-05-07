@@ -1,5 +1,9 @@
 #include "Mini2ServiceImpl.h"
 
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <stdexcept>
@@ -18,6 +22,48 @@ public:
         : std::runtime_error(message) {}
 };
 constexpr std::uint32_t kDefaultChunkSize = 1000; // Default number of records per chunk for streaming
+constexpr auto kForwardPeerTimeout = std::chrono::seconds(120);
+constexpr int kMaxGrpcMessageBytes = 64 * 1024 * 1024;
+
+class ForwardStreamChunkQueue {
+public:
+    void Push(QueryChunkResponse chunk) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            chunks_.push_back(std::move(chunk));
+        }
+        not_empty_.notify_one();
+    }
+
+    bool Pop(QueryChunkResponse* chunk) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        not_empty_.wait(lock, [this] {
+            return closed_ || !chunks_.empty();
+        });
+
+        if (chunks_.empty()) {
+            return false;
+        }
+
+        *chunk = std::move(chunks_.front());
+        chunks_.pop_front();
+        return true;
+    }
+
+    void Close() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            closed_ = true;
+        }
+        not_empty_.notify_all();
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable not_empty_;
+    std::deque<QueryChunkResponse> chunks_;
+    bool closed_ = false;
+};
 
 bool LoadsAOS(DatasetLoadMode mode) {
     return mode == DatasetLoadMode::AOS || mode == DatasetLoadMode::Both;
@@ -62,6 +108,20 @@ bool MatchesQuery(const Record& record, const QueryRequest& request) {
 }
 
 void AppendRecord(const Record& record, QueryResponse* response) {
+    auto* out = response->add_records();
+    out->set_id(record.id);
+    out->set_created_date(record.created_date);
+    out->set_closed_date(record.closed_date);
+    out->set_agency_id(record.agency_id);
+    out->set_problem_id(record.problem_id);
+    out->set_status_id(record.status_id);
+    out->set_borough_id(record.borough_id);
+    out->set_zip_code(record.zip_code);
+    out->set_latitude(record.latitude);
+    out->set_longitude(record.longitude);
+}
+
+void AppendRecord(const Record& record, QueryChunkResponse* response) {
     auto* out = response->add_records();
     out->set_id(record.id);
     out->set_created_date(record.created_date);
@@ -257,7 +317,13 @@ bool Mini2ServiceImpl::Initialize(
 void Mini2ServiceImpl::SetPeers(const std::vector<PeerInfo>& peers) {
     connected_peers_.clear();
     for (const auto& peer_info : peers) {
-        auto channel = grpc::CreateChannel(peer_info.address, grpc::InsecureChannelCredentials());
+        grpc::ChannelArguments channel_args;
+        channel_args.SetMaxReceiveMessageSize(kMaxGrpcMessageBytes);
+        channel_args.SetMaxSendMessageSize(kMaxGrpcMessageBytes);
+        auto channel = grpc::CreateCustomChannel(
+            peer_info.address,
+            grpc::InsecureChannelCredentials(),
+            channel_args);
 
         ConnectedPeer connected_peer;
         connected_peer.id = peer_info.id;
@@ -358,6 +424,206 @@ Status Mini2ServiceImpl::Forward(ServerContext* context, const QueryRequest* req
         std::cerr << "[" << node_id_ << "] Forward job failed: " << ex.what() << std::endl;
         return Status(grpc::StatusCode::INTERNAL, ex.what());
     }
+}
+
+Status Mini2ServiceImpl::ForwardStream(
+    ServerContext* context,
+    const QueryRequest* request,
+    ServerWriter<QueryChunkResponse>* writer) {
+    std::cout << "[" << node_id_ << "] Received ForwardStream request: "
+              << request->request_id() << std::endl;
+
+    if (!LoadsAOS(dataset_load_mode_)) {
+        return Status(
+            grpc::StatusCode::FAILED_PRECONDITION,
+            "ForwardStream requires dataset_mode aos or both");
+    }
+
+    const std::uint32_t chunk_size =
+        request->has_chunk_size() && request->chunk_size() > 0
+            ? request->chunk_size()
+            : kDefaultChunkSize;
+    const std::string request_id = request->request_id();
+    const auto stream_begin = std::chrono::steady_clock::now();
+
+    ForwardStreamChunkQueue outbound_chunks;
+    std::mutex chunk_index_mutex;
+    std::uint32_t next_chunk_index = 0;
+    std::uint64_t local_matched_record_count = 0;
+    std::vector<std::future<void>> producer_futures;
+    std::atomic<int> producers_remaining(
+        static_cast<int>(connected_peers_.size()) + 1);
+
+    auto finish_producer = [&outbound_chunks, &producers_remaining]() {
+        if (producers_remaining.fetch_sub(1) == 1) {
+            outbound_chunks.Close();
+        }
+    };
+
+    auto emit_chunk = [&](QueryChunkResponse* chunk) {
+        if (context->IsCancelled()) {
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(chunk_index_mutex);
+            chunk->set_chunk_index(next_chunk_index++);
+        }
+        chunk->set_done(false);
+        outbound_chunks.Push(std::move(*chunk));
+        return true;
+    };
+
+    if (!connected_peers_.empty()) {
+        std::cout << "[" << node_id_ << "] ForwardStream peer fanout started: "
+                  << request_id << " (peer_count=" << connected_peers_.size()
+                  << ")" << std::endl;
+
+        for (const auto& peer : connected_peers_) {
+            auto* stub = peer.stub.get();
+            std::string peer_id = peer.id;
+            producer_futures.push_back(std::async(
+                std::launch::async,
+                [context,
+                 request,
+                 stub,
+                 peer_id,
+                 &emit_chunk,
+                 &finish_producer,
+                 node_id = node_id_]() {
+                    const auto peer_begin = std::chrono::steady_clock::now();
+                    grpc::ClientContext peer_context;
+                    peer_context.set_deadline(context->deadline());
+
+                    std::unique_ptr<grpc::ClientReader<QueryChunkResponse>> reader(
+                        stub->ForwardStream(&peer_context, *request));
+
+                    QueryChunkResponse peer_chunk;
+                    std::uint64_t peer_chunks = 0;
+                    std::uint64_t peer_records = 0;
+                    while (!context->IsCancelled() && reader->Read(&peer_chunk)) {
+                        if (peer_chunk.records_size() == 0 && peer_chunk.done()) {
+                            continue;
+                        }
+
+                        ++peer_chunks;
+                        peer_records += static_cast<std::uint64_t>(
+                            peer_chunk.records_size());
+                        if (!emit_chunk(&peer_chunk)) {
+                            peer_context.TryCancel();
+                            break;
+                        }
+                    }
+
+                    grpc::Status status = reader->Finish();
+                    if (!status.ok()) {
+                        std::cout << "[" << node_id
+                                  << "] ForwardStream peer " << peer_id
+                                  << " failed: " << status.error_code() << " "
+                                  << status.error_message() << std::endl;
+                    }
+                    const double peer_ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - peer_begin).count();
+                    std::cout << "[" << node_id
+                              << "] ForwardStream peer reader completed: "
+                              << request->request_id()
+                              << " peer=" << peer_id
+                              << " chunks=" << peer_chunks
+                              << " records=" << peer_records
+                              << " elapsed_ms=" << peer_ms << std::endl;
+                    finish_producer();
+                }));
+        }
+    }
+
+    std::cout << "[" << node_id_ << "] ForwardStream local search started: "
+              << request_id << std::endl;
+    producer_futures.push_back(std::async(
+        std::launch::async,
+        [this,
+         context,
+         request,
+         chunk_size,
+         &emit_chunk,
+         &finish_producer,
+         &local_matched_record_count,
+         request_id]() {
+            const auto local_begin = std::chrono::steady_clock::now();
+            const bool use_leaf_buffer =
+                request->leaf_buffered_streaming() && connected_peers_.empty();
+            const bool still_writing = use_leaf_buffer
+                ? StreamBufferedLocalForwardChunks(
+                    context,
+                    *request,
+                    chunk_size,
+                    emit_chunk,
+                    &local_matched_record_count)
+                : StreamLocalForwardChunks(
+                    context,
+                    *request,
+                    chunk_size,
+                    emit_chunk,
+                    &local_matched_record_count);
+            if (!still_writing) {
+                std::cout << "[" << node_id_
+                          << "] ForwardStream stopped while streaming local chunks: "
+                          << request_id << std::endl;
+            }
+            const double local_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - local_begin).count();
+            std::cout << "[" << node_id_
+                      << "] ForwardStream local producer completed: "
+                      << request_id
+                      << " mode=" << (use_leaf_buffer ? "leaf-buffered" : "pure-stream")
+                      << " matched=" << local_matched_record_count
+                      << " elapsed_ms=" << local_ms << std::endl;
+            finish_producer();
+        }));
+
+    QueryChunkResponse outbound_chunk;
+    const auto writer_begin = std::chrono::steady_clock::now();
+    std::uint64_t written_chunks = 0;
+    std::uint64_t written_records = 0;
+    while (!context->IsCancelled() && outbound_chunks.Pop(&outbound_chunk)) {
+        if (!writer->Write(outbound_chunk)) {
+            break;
+        }
+        ++written_chunks;
+        written_records += static_cast<std::uint64_t>(
+            outbound_chunk.records_size());
+    }
+    const double writer_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - writer_begin).count();
+
+    for (auto& producer_future : producer_futures) {
+        producer_future.get();
+    }
+
+    QueryChunkResponse done_chunk;
+    done_chunk.set_request_id(request_id);
+    done_chunk.set_from_node(node_id_);
+    done_chunk.set_chunk_size(chunk_size);
+    done_chunk.set_done(true);
+    {
+        std::lock_guard<std::mutex> lock(chunk_index_mutex);
+        done_chunk.set_chunk_index(next_chunk_index);
+        done_chunk.set_total_chunks(next_chunk_index);
+    }
+    if (!context->IsCancelled()) {
+        writer->Write(done_chunk);
+    }
+
+    std::cout << "[" << node_id_ << "] ForwardStream completed: "
+              << request_id << " (local_matched="
+              << local_matched_record_count
+              << ", written_chunks=" << written_chunks
+              << ", written_records=" << written_records
+              << ", writer_ms=" << writer_ms
+              << ", total_ms="
+              << std::chrono::duration<double, std::milli>(
+                     std::chrono::steady_clock::now() - stream_begin).count()
+              << ")" << std::endl;
+
+    return Status::OK;
 }
 
 Status Mini2ServiceImpl::Insert(ServerContext* context, const InsertRequest* request,
@@ -597,7 +863,7 @@ QueryResponse Mini2ServiceImpl::ProcessForwardJob(const QueryRequest& request) {
             peer_response_futures.push_back(std::async(std::launch::async, [&request, stub, peer_id]() {
                 QueryResponse peer_response;
                 grpc::ClientContext peer_context;
-                peer_context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+                peer_context.set_deadline(std::chrono::system_clock::now() + kForwardPeerTimeout);
 
                 grpc::Status status = stub->Forward(&peer_context, request, &peer_response);
                 if (!status.ok())
@@ -638,6 +904,104 @@ QueryResponse Mini2ServiceImpl::ProcessForwardJob(const QueryRequest& request) {
               << " total records (Local matched: " << local_result.matched_record_count << ")" << std::endl;
 
     return response;
+}
+
+bool Mini2ServiceImpl::StreamLocalForwardChunks(
+    ServerContext* context,
+    const QueryRequest& request,
+    std::uint32_t chunk_size,
+    const std::function<bool(QueryChunkResponse*)>& emit_chunk,
+    std::uint64_t* local_matched_record_count) {
+    QueryChunkResponse chunk;
+    chunk.set_request_id(request.request_id());
+    chunk.set_from_node(node_id_);
+    chunk.set_chunk_size(chunk_size);
+    chunk.mutable_records()->Reserve(static_cast<int>(chunk_size));
+
+    std::lock_guard<std::mutex> dataset_lock(dataset_mutex_);
+    for (const auto& record : dataset_.get_records()) {
+        if (context->IsCancelled()) {
+            return false;
+        }
+        if (!MatchesQuery(record, request)) {
+            continue;
+        }
+
+        AppendRecord(record, &chunk);
+        ++(*local_matched_record_count);
+
+        if (static_cast<std::uint32_t>(chunk.records_size()) < chunk_size) {
+            continue;
+        }
+
+        if (!emit_chunk(&chunk)) {
+            return false;
+        }
+
+        chunk.Clear();
+        chunk.set_request_id(request.request_id());
+        chunk.set_from_node(node_id_);
+        chunk.set_chunk_size(chunk_size);
+        chunk.mutable_records()->Reserve(static_cast<int>(chunk_size));
+    }
+
+    if (chunk.records_size() > 0) {
+        if (!emit_chunk(&chunk)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool Mini2ServiceImpl::StreamBufferedLocalForwardChunks(
+    ServerContext* context,
+    const QueryRequest& request,
+    std::uint32_t chunk_size,
+    const std::function<bool(QueryChunkResponse*)>& emit_chunk,
+    std::uint64_t* local_matched_record_count) {
+    LocalSearchResult local_result;
+    {
+        std::lock_guard<std::mutex> dataset_lock(dataset_mutex_);
+        local_result = CollectLocalMatches(dataset_, request);
+    }
+
+    *local_matched_record_count = local_result.matched_record_count;
+
+    QueryChunkResponse chunk;
+    chunk.set_request_id(request.request_id());
+    chunk.set_from_node(node_id_);
+    chunk.set_chunk_size(chunk_size);
+    chunk.mutable_records()->Reserve(static_cast<int>(chunk_size));
+
+    for (const auto& record : local_result.records) {
+        if (context->IsCancelled()) {
+            return false;
+        }
+
+        AppendRecord(record, &chunk);
+        if (static_cast<std::uint32_t>(chunk.records_size()) < chunk_size) {
+            continue;
+        }
+
+        if (!emit_chunk(&chunk)) {
+            return false;
+        }
+
+        chunk.Clear();
+        chunk.set_request_id(request.request_id());
+        chunk.set_from_node(node_id_);
+        chunk.set_chunk_size(chunk_size);
+        chunk.mutable_records()->Reserve(static_cast<int>(chunk_size));
+    }
+
+    if (chunk.records_size() > 0) {
+        if (!emit_chunk(&chunk)) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 /** Distributed fan-out SOA count query. Every node handles its local data and forwards requests to peers, regarding coordinator and workers */

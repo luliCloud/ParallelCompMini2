@@ -15,6 +15,7 @@
 #include <vector>
 
 #include <grpcpp/channel.h>
+#include <grpcpp/support/channel_arguments.h>
 #include <grpcpp/client_context.h>
 #include <grpcpp/create_channel.h>
 #include <grpcpp/security/credentials.h>
@@ -24,6 +25,7 @@
 namespace {
 
 using Clock = std::chrono::steady_clock;
+constexpr int kMaxGrpcMessageBytes = 64 * 1024 * 1024;
 using mini2::NodeService;
 using mini2::ChunkCancelRequest;
 using mini2::ChunkCancelResponse;
@@ -67,10 +69,12 @@ struct Options {
     std::optional<std::int64_t> created_date_end;
     std::optional<std::uint32_t> status_id; // 0 for In Progress, 1 for Closed
     bool delete_all = false;
+    bool quiet_chunks = false;
+    bool leaf_buffered_streaming = false;
 };
 
 bool IsCommand(std::string_view token) {
-    return token == "ping" || token == "query" || token == "forward" || token == "insert"
+    return token == "ping" || token == "query" || token == "forward" || token == "forward-stream" || token == "insert"
         || token == "delete"
         || token == "forward-chunked"
         || token == "count-created-date-range"
@@ -87,7 +91,7 @@ std::string GenerateRequestId(std::string_view prefix) {
 }
 
 [[noreturn]] void ThrowUsageError(const std::string& message) {
-    throw std::runtime_error(message + "\nUsage: client -s <host:port> [-t <seconds>] <ping|query|forward|insert|delete|forward-chunked> [options]");
+    throw std::runtime_error(message + "\nUsage: client -s <host:port> [-t <seconds>] <ping|query|forward|forward-stream|insert|delete|forward-chunked> [options]");
 }
 
 std::string RequireValue(int& index, int argc, char** argv, std::string_view flag) {
@@ -219,6 +223,10 @@ Options ParseArgs(int argc, char** argv) {
             options.status_id = ParseUint32(RequireValue(index, argc, argv, token), token);
         } else if (token == "--all") {
             options.delete_all = true;
+        } else if (token == "--quiet-chunks") {
+            options.quiet_chunks = true;
+        } else if (token == "--leaf-buffered-streaming") {
+            options.leaf_buffered_streaming = true;
         } else {
             ThrowUsageError("Unknown command option: " + token);
         }
@@ -356,6 +364,7 @@ QueryRequest BuildQueryRequest(const Options& options) {
     if (options.chunk_size) {
         request.set_chunk_size(*options.chunk_size);
     }
+    request.set_leaf_buffered_streaming(options.leaf_buffered_streaming);
     return request;
 }
 
@@ -424,6 +433,9 @@ void PrintQueryRequest(const QueryRequest& request) {
     if (request.has_chunk_size()) {
         std::cout << "   chunk_size = " << request.chunk_size() << '\n';
     }
+    if (request.leaf_buffered_streaming()) {
+        std::cout << "   leaf_buffered_streaming = true\n";
+    }
 }
 
 void PrintPingResponse(const PingResponse& response, double elapsed_ms) {
@@ -463,6 +475,18 @@ void PrintChunkResponse(const QueryChunkResponse& response, double elapsed_ms) {
     std::cout << "   total_chunks = " << response.total_chunks() << '\n';
     std::cout << "   done = " << response.done() << '\n';
     std::cout << "   get_forward_chunk_rtt_ms = " << elapsed_ms << '\n';
+}
+
+void PrintForwardStreamChunk(const QueryChunkResponse& response, double elapsed_ms) {
+    std::cout << "forward-stream chunk:\n";
+    std::cout << "   from_node = " << response.from_node() << '\n';
+    std::cout << "   chunk_index = " << response.chunk_index() << '\n';
+    std::cout << "   records_returned = " << response.records_size() << '\n';
+    std::cout << "   done = " << response.done() << '\n';
+    if (response.done()) {
+        std::cout << "   total_chunks = " << response.total_chunks() << '\n';
+    }
+    std::cout << "   elapsed_ms = " << elapsed_ms << '\n';
 }
 
 void PrintCountResponse(const SOACountResponse& response, double elapsed_ms) {
@@ -576,7 +600,13 @@ int main(int argc, char** argv) {
         const Options options = ParseArgs(argc, argv);
         const auto start_total = Clock::now();
         const auto start_connect = Clock::now();
-        auto channel = grpc::CreateChannel(options.server, grpc::InsecureChannelCredentials());
+        grpc::ChannelArguments channel_args;
+        channel_args.SetMaxReceiveMessageSize(kMaxGrpcMessageBytes);
+        channel_args.SetMaxSendMessageSize(kMaxGrpcMessageBytes);
+        auto channel = grpc::CreateCustomChannel(
+            options.server,
+            grpc::InsecureChannelCredentials(),
+            channel_args);
         const auto connect_deadline = std::chrono::system_clock::now() +
             std::chrono::duration_cast<std::chrono::system_clock::duration>(
                 std::chrono::duration<double>(options.timeout_seconds));
@@ -621,6 +651,48 @@ int main(int argc, char** argv) {
                 });
             const auto [response, rpc_ms] = future.get();
             PrintQueryResponse(options.command, response, rpc_ms);
+        } else if (options.command == "forward-stream") {
+            const QueryRequest request = BuildQueryRequest(options);
+            PrintQueryRequest(request);
+
+            grpc::ClientContext context;
+            ConfigureContext(context, options.timeout_seconds);
+
+            const auto start_rpc = Clock::now();
+            std::unique_ptr<grpc::ClientReader<QueryChunkResponse>> reader(
+                stub->ForwardStream(&context, request));
+
+            std::uint64_t total_records_received = 0;
+            std::uint32_t total_chunks_received = 0;
+            QueryChunkResponse chunk;
+            while (reader->Read(&chunk)) {
+                const double chunk_ms = std::chrono::duration<double, std::milli>(
+                    Clock::now() - start_rpc).count();
+
+                if (chunk.done() && chunk.records_size() == 0) {
+                    if (!options.quiet_chunks) {
+                        PrintForwardStreamChunk(chunk, chunk_ms);
+                    }
+                    continue;
+                }
+
+                total_records_received +=
+                    static_cast<std::uint64_t>(chunk.records_size());
+                ++total_chunks_received;
+                if (!options.quiet_chunks) {
+                    PrintForwardStreamChunk(chunk, chunk_ms);
+                }
+            }
+
+            const grpc::Status status = reader->Finish();
+            EnsureOk(status);
+
+            const double stream_ms = std::chrono::duration<double, std::milli>(
+                Clock::now() - start_rpc).count();
+            std::cout << "forward-stream response:\n";
+            std::cout << "   chunks_received = " << total_chunks_received << '\n';
+            std::cout << "   records_received = " << total_records_received << '\n';
+            std::cout << "   forward_stream_ms = " << stream_ms << '\n';
         } else if (options.command == "insert") {
             const InsertRequest request = BuildInsertRequest(options);
             PrintInsertRequest(request);
@@ -683,7 +755,9 @@ int main(int argc, char** argv) {
                 const auto [chunk_response, chunk_rpc_ms] = chunk_future.get();
                 total_records_received +=
                     static_cast<std::uint64_t>(chunk_response.records_size());
-                PrintChunkResponse(chunk_response, chunk_rpc_ms);
+                if (!options.quiet_chunks) {
+                    PrintChunkResponse(chunk_response, chunk_rpc_ms);
+                }
 
                 if (chunk_response.done()) {
                     break;
@@ -769,6 +843,8 @@ int main(int argc, char** argv) {
 // ./build/bin/client -s localhost:50051 ping --request-id test-ping-1
 // ./build/bin/client -s localhost:50051 query --agency-id 1
 // ./build/bin/client -s localhost:50051 forward --borough-id 2
+// ./build/bin/client -s localhost:50051 forward-stream --borough-id 2 --chunk-size 500
+// ./build/bin/client -s localhost:50051 forward-stream --agency-id 10 --chunk-size 5000 --leaf-buffered-streaming --quiet-chunks
 // ./build/bin/client -s localhost:50051 delete --record-id 910001234
 // ./build/bin/client -s localhost:50051 delete --zip-code 11215 --borough-id 3
 // ./build/bin/client -s localhost:50051 delete --all
