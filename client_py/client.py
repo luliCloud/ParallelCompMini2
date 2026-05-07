@@ -79,6 +79,17 @@ def parse_args():
     )
     add_query_filters(forward_parser, include_chunk_size=True)
 
+    forward_stream_parser = subparsers.add_parser(
+        "forward-stream",
+        help="Send ForwardStream request and receive server-streamed chunks",
+    )
+    forward_stream_parser.add_argument(
+        "--request-id",
+        default=None,
+        help="Request ID for the streaming forward request. If omitted, a random one is generated.",
+    )
+    add_query_filters(forward_stream_parser, include_chunk_size=True)
+
     insert_parser = subparsers.add_parser("insert", help="Send Insert request to the server")
     insert_parser.add_argument(
         "--request-id",
@@ -457,6 +468,36 @@ def run_forward(stub, args, executor):
     print_query_response("forward", response, forward_ms)
 
 
+def run_forward_stream(stub, args):
+    request = build_query_request(args)
+    print_query_request(request)
+
+    start_rpc = time.perf_counter()
+    total_records_received = 0
+    total_chunks_received = 0
+
+    print("forward-stream response:")
+    for chunk in stub.ForwardStream(request, timeout=args.timeout):
+        chunk_ms = (time.perf_counter() - start_rpc) * 1000
+        if chunk.done and len(chunk.records) == 0:
+            print(f"   done = true")
+            print(f"   total_chunks = {chunk.total_chunks}")
+            continue
+
+        total_chunks_received += 1
+        total_records_received += len(chunk.records)
+        print(
+            "   chunk "
+            f"{chunk.chunk_index} from {chunk.from_node}: "
+            f"records={len(chunk.records)}, elapsed_ms={chunk_ms:.2f}"
+        )
+
+    stream_ms = (time.perf_counter() - start_rpc) * 1000
+    print(f"   chunks_received = {total_chunks_received}")
+    print(f"   records_received = {total_records_received}")
+    print(f"   forward_stream_ms = {stream_ms:.2f}")
+
+
 def run_insert(stub, args, executor):
     request = build_insert_request(args)
     print_insert_request(request)
@@ -578,6 +619,8 @@ def run():
                 run_query(stub, args, executor)
             elif args.command == "forward":
                 run_forward(stub, args, executor)
+            elif args.command == "forward-stream":
+                run_forward_stream(stub, args)
             elif args.command == "insert":
                 run_insert(stub, args, executor)
             elif args.command == "delete":
@@ -615,6 +658,7 @@ if __name__ == "__main__":
 # python3 client_py/client.py -s localhost:50051 ping
 # python3 client_py/client.py -s localhost:50051 query --agency-id 1
 # python3 client_py/client.py -s localhost:50051 forward --agency-id 1
+# python3 client_py/client.py -s localhost:50051 forward-stream --agency-id 1 --chunk-size 500
 # python3 client_py/client.py -s localhost:50051 insert --record-id 1 --created-date 1770249600 --agency-id 1 --problem-id 2 --status-id 0 --borough-id 3
 # python3 client_py/client.py -s localhost:50051 forward-chunked --agency-id 1 --chunk-size 500
 # python3 client_py/client.py -s localhost:50051 count-created-date-range --created-date-start 1770249600 --created-date-end 1770335999

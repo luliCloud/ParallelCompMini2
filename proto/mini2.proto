@@ -8,6 +8,7 @@ service NodeService {
   rpc Ping(PingRequest)           returns (PingResponse)          {}
   rpc Query(QueryRequest)         returns (QueryResponse)         {}
   rpc Forward(QueryRequest)       returns (QueryResponse)         {}
+  rpc ForwardStream(QueryRequest) returns (stream QueryChunkResponse) {}
   rpc Insert(InsertRequest)       returns (InsertResponse)        {}
   rpc Delete(DeleteRequest)       returns (DeleteResponse)        {}
   rpc CountQuery(SOACountRequest) returns (SOACountResponse)      {}

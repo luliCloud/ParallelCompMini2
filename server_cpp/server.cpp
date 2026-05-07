@@ -22,6 +22,8 @@ namespace fs = std::filesystem;
 
 namespace {
 
+constexpr int kMaxGrpcMessageBytes = 64 * 1024 * 1024;
+
 fs::path ResolveConfigPath(const std::string& node_id) {
     const fs::path relative = fs::path("config") / ("node_" + node_id + ".yaml");
     if (fs::exists(relative)) {
@@ -169,6 +171,8 @@ void RunServer(const std::string& node_id)
 
         // Build and start server
         ServerBuilder builder;
+        builder.SetMaxReceiveMessageSize(kMaxGrpcMessageBytes);
+        builder.SetMaxSendMessageSize(kMaxGrpcMessageBytes);
         builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
         builder.RegisterService(&service);
         std::unique_ptr<Server> server(builder.BuildAndStart());
