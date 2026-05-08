@@ -39,6 +39,8 @@ message QueryRequest {
   optional float  lon_min    = 7;
   optional float  lon_max    = 8;
   optional uint32 chunk_size = 9; // max records by each chunk
+  bool leaf_buffered_streaming = 10; // ForwardChunks: leaf nodes collect local matches first, then stream chunks
+  bool internal_full_streaming = 11; // ForwardChunks: every tree edge pulls chunks with unary RPCs
 }
 
 message QueryResponse {
@@ -185,6 +187,7 @@ message SOATopKRequest {
   int64 created_date_start = 2;
   int64 created_date_end = 3;
   uint32 top_k = 4;
+  bool return_all_counts = 5; // internal fan-out: return all complaint counts so parent can merge exact top-k
 }
 
 message SOATopKEntry {

@@ -5,6 +5,7 @@ queue_mode: "fifo"
 enable_cache: false
 dataset_mode: "aos"
 agency_dict_path: "config/global_agency_ids.csv"
+problem_dict_path: "config/global_problem_ids.csv"
 borough_dict_path: "config/global_borough_ids.csv"
 status_dict_path: "config/global_status_ids.csv"
 peers:        []

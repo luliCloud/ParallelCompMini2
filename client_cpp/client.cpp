@@ -15,6 +15,7 @@
 #include <vector>
 
 #include <grpcpp/channel.h>
+#include <grpcpp/support/channel_arguments.h>
 #include <grpcpp/client_context.h>
 #include <grpcpp/create_channel.h>
 #include <grpcpp/security/credentials.h>
@@ -24,6 +25,7 @@
 namespace {
 
 using Clock = std::chrono::steady_clock;
+constexpr int kMaxGrpcMessageBytes = 64 * 1024 * 1024;
 using mini2::NodeService;
 using mini2::ChunkCancelRequest;
 using mini2::ChunkCancelResponse;
@@ -42,6 +44,11 @@ using mini2::DeleteResponse;
 using mini2::SOACountKind;
 using mini2::SOACountRequest;
 using mini2::SOACountResponse;
+using mini2::SOAGroupByKind;
+using mini2::SOAGroupByRequest;
+using mini2::SOAGroupByResponse;
+using mini2::SOATopKRequest;
+using mini2::SOATopKResponse;
 
 struct Options {
     std::string server;
@@ -66,7 +73,11 @@ struct Options {
     std::optional<std::int64_t> created_date_start;
     std::optional<std::int64_t> created_date_end;
     std::optional<std::uint32_t> status_id; // 0 for In Progress, 1 for Closed
+    std::optional<std::uint32_t> top_k;
     bool delete_all = false;
+    bool quiet_chunks = false;
+    bool leaf_buffered_streaming = false;
+    bool internal_full_streaming = false;
 };
 
 bool IsCommand(std::string_view token) {
@@ -75,7 +86,9 @@ bool IsCommand(std::string_view token) {
         || token == "forward-chunked"
         || token == "count-created-date-range"
         || token == "count-by-agency-and-created-date-range"
-        || token == "count-by-status-and-created-date-range";
+        || token == "count-by-status-and-created-date-range"
+        || token == "group-by-borough-created-date-range"
+        || token == "top-k-complaints";
 }
 
 std::string GenerateRequestId(std::string_view prefix) {
@@ -87,7 +100,13 @@ std::string GenerateRequestId(std::string_view prefix) {
 }
 
 [[noreturn]] void ThrowUsageError(const std::string& message) {
-    throw std::runtime_error(message + "\nUsage: client -s <host:port> [-t <seconds>] <ping|query|forward|insert|delete|forward-chunked> [options]");
+    throw std::runtime_error(
+        message +
+        "\nUsage: client -s <host:port> [-t <seconds>] "
+        "<ping|query|forward|insert|delete|forward-chunked|"
+        "count-created-date-range|count-by-agency-and-created-date-range|"
+        "count-by-status-and-created-date-range|group-by-borough-created-date-range|"
+        "top-k-complaints> [options]");
 }
 
 std::string RequireValue(int& index, int argc, char** argv, std::string_view flag) {
@@ -217,8 +236,16 @@ Options ParseArgs(int argc, char** argv) {
             options.created_date_end = ParseInt64(RequireValue(index, argc, argv, token), token);
         } else if (token == "--status-id") {
             options.status_id = ParseUint32(RequireValue(index, argc, argv, token), token);
+        } else if (token == "--top-k") {
+            options.top_k = ParseUint32(RequireValue(index, argc, argv, token), token);
         } else if (token == "--all") {
             options.delete_all = true;
+        } else if (token == "--quiet-chunks") {
+            options.quiet_chunks = true;
+        } else if (token == "--leaf-buffered-streaming") {
+            options.leaf_buffered_streaming = true;
+        } else if (token == "--internal-full-streaming") {
+            options.internal_full_streaming = true;
         } else {
             ThrowUsageError("Unknown command option: " + token);
         }
@@ -356,6 +383,8 @@ QueryRequest BuildQueryRequest(const Options& options) {
     if (options.chunk_size) {
         request.set_chunk_size(*options.chunk_size);
     }
+    request.set_leaf_buffered_streaming(options.leaf_buffered_streaming);
+    request.set_internal_full_streaming(options.internal_full_streaming);
     return request;
 }
 
@@ -397,6 +426,30 @@ SOACountRequest BuildCountByStatusAndCreatedDateRangeRequest(const Options& opti
     return request;
 }
 
+SOATopKRequest BuildTopKComplaintsRequest(const Options& options) {
+    if (!options.created_date_start || !options.created_date_end || !options.top_k) {
+        ThrowUsageError("Missing required options for top-k-complaints: --created-date-start, --created-date-end and --top-k");
+    }
+    SOATopKRequest request;
+    request.set_request_id(options.request_id.value_or(GenerateRequestId("client-soa-topk")));
+    request.set_created_date_start(*options.created_date_start);
+    request.set_created_date_end(*options.created_date_end);
+    request.set_top_k(*options.top_k);
+    return request;
+}
+
+SOAGroupByRequest BuildGroupByBoroughCreatedDateRangeRequest(const Options& options) {
+    if (!options.created_date_start || !options.created_date_end) {
+        ThrowUsageError("Missing required options for group-by-borough-created-date-range: --created-date-start and --created-date-end");
+    }
+    SOAGroupByRequest request;
+    request.set_request_id(options.request_id.value_or(GenerateRequestId("client-soa-groupby")));
+    request.set_kind(SOAGroupByKind::SOA_GROUP_BY_BOROUGH_SUMMARY_IN_CREATED_DATE_RANGE);
+    request.set_created_date_start(*options.created_date_start);
+    request.set_created_date_end(*options.created_date_end);
+    return request;
+}
+
 void PrintQueryRequest(const QueryRequest& request) {
     std::cout << "query request:\n";
     std::cout << "   request_id = " << request.request_id() << '\n';
@@ -423,6 +476,12 @@ void PrintQueryRequest(const QueryRequest& request) {
     }
     if (request.has_chunk_size()) {
         std::cout << "   chunk_size = " << request.chunk_size() << '\n';
+    }
+    if (request.leaf_buffered_streaming()) {
+        std::cout << "   leaf_buffered_streaming = true\n";
+    }
+    if (request.internal_full_streaming()) {
+        std::cout << "   internal_full_streaming = true\n";
     }
 }
 
@@ -471,6 +530,30 @@ void PrintCountResponse(const SOACountResponse& response, double elapsed_ms) {
     std::cout << "   from_node = " << response.from_node() << '\n';
     std::cout << "   count = " << response.count() << '\n';
     std::cout << "   count_query_rtt_ms = " << elapsed_ms << '\n';
+}
+
+void PrintTopKResponse(const SOATopKResponse& response, double elapsed_ms) {
+    std::cout << "SOA top-k complaints response:\n";
+    std::cout << "   response_request_id = " << response.request_id() << '\n';
+    std::cout << "   from_node = " << response.from_node() << '\n';
+    std::cout << "   entries_returned = " << response.entries_size() << '\n';
+    for (const auto& entry : response.entries()) {
+        std::cout << "   problem_id = " << entry.key()
+                  << " count = " << entry.count() << '\n';
+    }
+    std::cout << "   top_k_query_rtt_ms = " << elapsed_ms << '\n';
+}
+
+void PrintGroupByResponse(const SOAGroupByResponse& response, double elapsed_ms) {
+    std::cout << "SOA group-by borough response:\n";
+    std::cout << "   response_request_id = " << response.request_id() << '\n';
+    std::cout << "   from_node = " << response.from_node() << '\n';
+    std::cout << "   entries_returned = " << response.entries_size() << '\n';
+    for (const auto& entry : response.entries()) {
+        std::cout << "   borough_id = " << entry.key()
+                  << " count = " << entry.count() << '\n';
+    }
+    std::cout << "   group_by_query_rtt_ms = " << elapsed_ms << '\n';
 }
 
 void PrintInsertRequest(const InsertRequest& request) {
@@ -576,7 +659,13 @@ int main(int argc, char** argv) {
         const Options options = ParseArgs(argc, argv);
         const auto start_total = Clock::now();
         const auto start_connect = Clock::now();
-        auto channel = grpc::CreateChannel(options.server, grpc::InsecureChannelCredentials());
+        grpc::ChannelArguments channel_args;
+        channel_args.SetMaxReceiveMessageSize(kMaxGrpcMessageBytes);
+        channel_args.SetMaxSendMessageSize(kMaxGrpcMessageBytes);
+        auto channel = grpc::CreateCustomChannel(
+            options.server,
+            grpc::InsecureChannelCredentials(),
+            channel_args);
         const auto connect_deadline = std::chrono::system_clock::now() +
             std::chrono::duration_cast<std::chrono::system_clock::duration>(
                 std::chrono::duration<double>(options.timeout_seconds));
@@ -658,16 +747,14 @@ int main(int argc, char** argv) {
             const auto [session_response, start_rpc_ms] = session_future.get();
             PrintChunkSessionResponse(session_response, start_rpc_ms);
 
-            std::vector<std::future<std::pair<QueryChunkResponse, double>>> chunk_futures;
-            chunk_futures.reserve(static_cast<std::size_t>(session_response.total_chunks()));
-            for (std::uint32_t chunk_index = 0;
-                 chunk_index < session_response.total_chunks();
-                 ++chunk_index) {
+            std::uint64_t total_records_received = 0;
+            std::uint32_t chunks_received = 0;
+            for (std::uint32_t chunk_index = 0; ; ++chunk_index) {
                 ChunkRequest chunk_request;
                 chunk_request.set_session_id(session_response.session_id());
                 chunk_request.set_chunk_index(chunk_index);
 
-                chunk_futures.push_back(SubmitUnaryRpc<QueryChunkResponse>(
+                auto chunk_future = SubmitUnaryRpc<QueryChunkResponse>(
                     [&, chunk_request](QueryChunkResponse& chunk_response) mutable {
                         grpc::ClientContext chunk_context;
                         ConfigureContext(chunk_context, options.timeout_seconds);
@@ -675,18 +762,21 @@ int main(int argc, char** argv) {
                             &chunk_context,
                             chunk_request,
                             &chunk_response);
-                    }));
-            }
+                    });
 
-            std::uint64_t total_records_received = 0;
-            for (auto& chunk_future : chunk_futures) {
                 const auto [chunk_response, chunk_rpc_ms] = chunk_future.get();
+                if (chunk_response.done()) {
+                    if (!options.quiet_chunks) {
+                        PrintChunkResponse(chunk_response, chunk_rpc_ms);
+                    }
+                    break;
+                }
+
                 total_records_received +=
                     static_cast<std::uint64_t>(chunk_response.records_size());
-                PrintChunkResponse(chunk_response, chunk_rpc_ms);
-
-                if (chunk_response.done()) {
-                    break;
+                ++chunks_received;
+                if (!options.quiet_chunks) {
+                    PrintChunkResponse(chunk_response, chunk_rpc_ms);
                 }
             }
 
@@ -702,6 +792,7 @@ int main(int argc, char** argv) {
             static_cast<void>(cancel_rpc_ms);
 
             std::cout << "forward-chunked response:\n";
+            std::cout << "   chunks_received = " << chunks_received << '\n';
             std::cout << "   records_received = " << total_records_received << '\n';
             std::cout << "   session_cancelled = " << cancel_response.cancelled() << '\n';
         } else if (options.command == "count-created-date-range") {
@@ -747,9 +838,40 @@ int main(int argc, char** argv) {
                     grpc::ClientContext context;
                     ConfigureContext(context, options.timeout_seconds);
                     return stub->CountQuery(&context, request, &response);
-                });
+            });
             const auto [response, rpc_ms] = future.get();
             PrintCountResponse(response, rpc_ms);
+        } else if (options.command == "top-k-complaints") {
+            const auto request = BuildTopKComplaintsRequest(options);
+            std::cout << "SOA Top-K Complaints request: \n";
+            std::cout << "   request_id = " << request.request_id() << '\n';
+            std::cout << "   created_date_start = " << request.created_date_start() << '\n';
+            std::cout << "   created_date_end = " << request.created_date_end() << '\n';
+            std::cout << "   top_k = " << request.top_k() << '\n';
+
+            auto future = SubmitUnaryRpc<SOATopKResponse>(
+                [&](SOATopKResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    return stub->TopKQuery(&context, request, &response);
+                });
+            const auto [response, rpc_ms] = future.get();
+            PrintTopKResponse(response, rpc_ms);
+        } else if (options.command == "group-by-borough-created-date-range") {
+            const auto request = BuildGroupByBoroughCreatedDateRangeRequest(options);
+            std::cout << "SOA Group-By Borough Created Date Range request: \n";
+            std::cout << "   request_id = " << request.request_id() << '\n';
+            std::cout << "   created_date_start = " << request.created_date_start() << '\n';
+            std::cout << "   created_date_end = " << request.created_date_end() << '\n';
+
+            auto future = SubmitUnaryRpc<SOAGroupByResponse>(
+                [&](SOAGroupByResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    return stub->GroupByQuery(&context, request, &response);
+                });
+            const auto [response, rpc_ms] = future.get();
+            PrintGroupByResponse(response, rpc_ms);
         } else {
             ThrowUsageError("Unknown command: " + options.command);
         }
@@ -769,9 +891,13 @@ int main(int argc, char** argv) {
 // ./build/bin/client -s localhost:50051 ping --request-id test-ping-1
 // ./build/bin/client -s localhost:50051 query --agency-id 1
 // ./build/bin/client -s localhost:50051 forward --borough-id 2
+// ./build/bin/client -s localhost:50051 forward-chunked --borough-id 2 --chunk-size 500
+// ./build/bin/client -s localhost:50051 forward-chunked --agency-id 10 --chunk-size 5000 --internal-full-streaming --quiet-chunks
+// ./build/bin/client -s localhost:50051 forward-chunked --agency-id 10 --chunk-size 5000 --leaf-buffered-streaming --quiet-chunks
 // ./build/bin/client -s localhost:50051 delete --record-id 910001234
 // ./build/bin/client -s localhost:50051 delete --zip-code 11215 --borough-id 3
 // ./build/bin/client -s localhost:50051 delete --all
+// ./build/bin/client -s localhost:50051 group-by-borough-created-date-range --created-date-start 1577836800 --created-date-end 1609459199
 
 /** distributed 
  * ./build/bin/client -s localhost:50051 count-created-date-range \

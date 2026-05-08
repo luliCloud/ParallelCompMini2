@@ -36,6 +36,11 @@ def add_query_filters(parser, include_chunk_size: bool = False):
     parser.add_argument("--lon-max", type=float, default=None)
     if include_chunk_size:
         parser.add_argument("--chunk-size", type=int, default=None)
+        parser.add_argument(
+            "--leaf-buffered-streaming",
+            action="store_true",
+            help="ForwardStream: leaf nodes collect local matches first, then stream chunks.",
+        )
 
 
 def parse_args():
@@ -78,6 +83,17 @@ def parse_args():
         help="Request ID for the forward request. If omitted, a random one is generated.",
     )
     add_query_filters(forward_parser, include_chunk_size=True)
+
+    forward_stream_parser = subparsers.add_parser(
+        "forward-stream",
+        help="Send ForwardStream request and receive server-streamed chunks",
+    )
+    forward_stream_parser.add_argument(
+        "--request-id",
+        default=None,
+        help="Request ID for the streaming forward request. If omitted, a random one is generated.",
+    )
+    add_query_filters(forward_stream_parser, include_chunk_size=True)
 
     insert_parser = subparsers.add_parser("insert", help="Send Insert request to the server")
     insert_parser.add_argument(
@@ -152,6 +168,15 @@ def parse_args():
     count_by_status_parser.add_argument("--created-date-end", type=int, required=True)
     count_by_status_parser.add_argument("--status-id", type=int, default=None)
 
+    top_k_parser = subparsers.add_parser(
+        "top-k-complaints",
+        help="SOA top-k complaint/problem ids in created date range",
+    )
+    top_k_parser.add_argument("--request-id", default=None)
+    top_k_parser.add_argument("--created-date-start", type=int, required=True)
+    top_k_parser.add_argument("--created-date-end", type=int, required=True)
+    top_k_parser.add_argument("--top-k", type=int, required=True)
+
     return parser.parse_args()
 
 
@@ -208,6 +233,8 @@ def build_query_request(args):
         request.lon_max = args.lon_max
     if getattr(args, "chunk_size", None) is not None:
         request.chunk_size = args.chunk_size
+    if getattr(args, "leaf_buffered_streaming", False):
+        request.leaf_buffered_streaming = True
 
     return request
 
@@ -310,6 +337,15 @@ def build_count_by_status_created_date_range_request(args):
     return request
 
 
+def build_top_k_complaints_request(args):
+    request = mini2_pb2.SOATopKRequest()
+    request.request_id = args.request_id or make_request_id("client-soa-topk")
+    request.created_date_start = args.created_date_start
+    request.created_date_end = args.created_date_end
+    request.top_k = args.top_k
+    return request
+
+
 def print_query_request(request):
     print("query request:")
     print(f"   request_id = {request.request_id}")
@@ -329,6 +365,8 @@ def print_query_request(request):
         print(f"   lon_max = {request.lon_max}")
     if request.HasField("chunk_size"):
         print(f"   chunk_size = {request.chunk_size}")
+    if request.leaf_buffered_streaming:
+        print("   leaf_buffered_streaming = true")
 
 
 def print_query_response(label, response, elapsed_ms):
@@ -435,6 +473,16 @@ def print_count_response(response, elapsed_ms):
     print(f"   count_query_rtt_ms = {elapsed_ms:.2f}")
 
 
+def print_top_k_response(response, elapsed_ms):
+    print("SOA top-k complaints response:")
+    print(f"   response_request_id = {response.request_id}")
+    print(f"   from_node = {response.from_node}")
+    print(f"   entries_returned = {len(response.entries)}")
+    for entry in response.entries:
+        print(f"   problem_id = {entry.key} count = {entry.count}")
+    print(f"   top_k_query_rtt_ms = {elapsed_ms:.2f}")
+
+
 def run_query(stub, args, executor):
     request = build_query_request(args)
     print_query_request(request)
@@ -455,6 +503,36 @@ def run_forward(stub, args, executor):
     ).result()
 
     print_query_response("forward", response, forward_ms)
+
+
+def run_forward_stream(stub, args):
+    request = build_query_request(args)
+    print_query_request(request)
+
+    start_rpc = time.perf_counter()
+    total_records_received = 0
+    total_chunks_received = 0
+
+    print("forward-stream response:")
+    for chunk in stub.ForwardStream(request, timeout=args.timeout):
+        chunk_ms = (time.perf_counter() - start_rpc) * 1000
+        if chunk.done and len(chunk.records) == 0:
+            print(f"   done = true")
+            print(f"   total_chunks = {chunk.total_chunks}")
+            continue
+
+        total_chunks_received += 1
+        total_records_received += len(chunk.records)
+        print(
+            "   chunk "
+            f"{chunk.chunk_index} from {chunk.from_node}: "
+            f"records={len(chunk.records)}, elapsed_ms={chunk_ms:.2f}"
+        )
+
+    stream_ms = (time.perf_counter() - start_rpc) * 1000
+    print(f"   chunks_received = {total_chunks_received}")
+    print(f"   records_received = {total_records_received}")
+    print(f"   forward_stream_ms = {stream_ms:.2f}")
 
 
 def run_insert(stub, args, executor):
@@ -558,6 +636,20 @@ def run_count_by_status_and_created_date_range(stub, args, executor):
     print_count_response(response, count_ms)
 
 
+def run_top_k_complaints(stub, args, executor):
+    request = build_top_k_complaints_request(args)
+    print("SOA Top-K Complaints request: ")
+    print(f"   request_id = {request.request_id}")
+    print(f"   created_date_start = {request.created_date_start}")
+    print(f"   created_date_end = {request.created_date_end}")
+    print(f"   top_k = {request.top_k}")
+
+    response, top_k_ms = submit_unary_rpc(
+        executor, stub.TopKQuery, request, args.timeout
+    ).result()
+    print_top_k_response(response, top_k_ms)
+
+
 def run():
     args = parse_args()
     start_total = time.perf_counter()
@@ -578,6 +670,8 @@ def run():
                 run_query(stub, args, executor)
             elif args.command == "forward":
                 run_forward(stub, args, executor)
+            elif args.command == "forward-stream":
+                run_forward_stream(stub, args)
             elif args.command == "insert":
                 run_insert(stub, args, executor)
             elif args.command == "delete":
@@ -590,6 +684,8 @@ def run():
                 run_count_by_agency_and_created_date_range(stub, args, executor)
             elif args.command == "count-by-status-and-created-date-range":
                 run_count_by_status_and_created_date_range(stub, args, executor)
+            elif args.command == "top-k-complaints":
+                run_top_k_complaints(stub, args, executor)
             else:
                 raise ValueError(f"Unknown command: {args.command}")
 
@@ -615,6 +711,7 @@ if __name__ == "__main__":
 # python3 client_py/client.py -s localhost:50051 ping
 # python3 client_py/client.py -s localhost:50051 query --agency-id 1
 # python3 client_py/client.py -s localhost:50051 forward --agency-id 1
+# python3 client_py/client.py -s localhost:50051 forward-stream --agency-id 1 --chunk-size 500
 # python3 client_py/client.py -s localhost:50051 insert --record-id 1 --created-date 1770249600 --agency-id 1 --problem-id 2 --status-id 0 --borough-id 3
 # python3 client_py/client.py -s localhost:50051 forward-chunked --agency-id 1 --chunk-size 500
 # python3 client_py/client.py -s localhost:50051 count-created-date-range --created-date-start 1770249600 --created-date-end 1770335999
