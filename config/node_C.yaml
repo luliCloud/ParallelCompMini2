@@ -2,7 +2,7 @@ node_id:      "C"
 host:         "0.0.0.0"
 port:         50053
 enable_cache: false
-dataset_mode: "soa"
+dataset_mode: "aos"
 agency_dict_path: "config/global_agency_ids.csv"
 problem_dict_path: "config/global_problem_ids.csv"
 borough_dict_path: "config/global_borough_ids.csv"
