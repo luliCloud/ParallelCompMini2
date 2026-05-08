@@ -1,0 +1,272 @@
+id,value
+0,AHV Inspection Unit
+1,APPLIANCE
+2,ASBESTOS
+3,Abandoned Bike
+4,Abandoned Vehicle
+5,Adopt-A-Basket
+6,Air Quality
+7,Animal Facility - No Permit
+8,Animal in a Park
+9,Animal-Abuse
+10,Appliance
+11,Asbestos
+12,BEST/Site Safety
+13,Beach/Pool/Sauna Complaint
+14,Bench
+15,Bike Rack
+16,Bike Rack Condition
+17,Bike/Roller/Skate
+18,Bike/Roller/Skate Chronic
+19,Blocked Driveway
+20,Boiler
+21,Boilers
+22,Borough Office
+23,Bottled Water
+24,Bridge Condition
+25,Broken Parking Meter
+26,Building Condition
+27,Building Drinking Water Tank
+28,Building Marshal's Office
+29,Building Marshals office
+30,Building/Use
+31,Bus Stop Shelter Complaint
+32,Bus Stop Shelter Placement
+33,COVID-19 Non-essential Construction
+34,Calorie Labeling
+35,Cannabis Retailer
+36,Change Collection Schedule
+37,Collection Truck Noise
+38,Commercial Disposal Complaint
+39,Construction Lead Dust
+40,Construction Safety Enforcement
+41,Consumer Complaint
+42,Cooling Tower
+43,Cranes and Derricks
+44,Curb Condition
+45,DEP Bridge Condition
+46,DEP Highway Condition
+47,DEP Sidewalk Condition
+48,DEP Street Condition
+49,DOB Posted Notice or Order
+50,DOOR/WINDOW
+51,DSNY Internal
+52,DSNY Spillage
+53,Damaged Tree
+54,Day Care
+55,Dead Animal
+56,Dead/Dying Tree
+57,Dept of Investigations
+58,Derelict Bicycle
+59,Derelict Vehicles
+60,Dirty Condition
+61,Dirty Conditions
+62,Disorderly Youth
+63,Dispatched Taxi Complaint
+64,Dispatched Taxi Compliment
+65,Door/Window
+66,Drinking
+67,Drinking Water
+68,Drug Activity
+69,Dumpster Complaint
+70,E-Scooter
+71,ELECTRIC
+72,ELEVATOR
+73,Electric
+74,Electrical
+75,Electronics Waste
+76,Electronics Waste Appointment
+77,Elevator
+78,Emergency Response Team (ERT)
+79,Employee Behavior
+80,Encampment
+81,Executive Inspections
+82,FHV Licensee Complaint
+83,FLOORING/STAIRS
+84,Facade Insp Safety Pgm
+85,Facades
+86,Face Covering Violation
+87,Ferry Complaint
+88,Ferry Inquiry
+89,Ferry Permit
+90,Flooring/Stairs
+91,Foam Ban Enforcement
+92,Food Establishment
+93,Food Poisoning
+94,For Hire Vehicle Complaint
+95,For Hire Vehicle Report
+96,Forensic Engineering
+97,Found Property
+98,GENERAL
+99,General
+100,General Construction/Plumbing
+101,Graffiti
+102,Green Taxi Complaint
+103,Green Taxi Report
+104,HEAT/HOT WATER
+105,Harboring Bees/Wasps
+106,Hazardous Materials
+107,Heat/Hot Water
+108,Highway Condition
+109,Highway Sign - Damaged
+110,Highway Sign - Dangling
+111,Highway Sign - Missing
+112,Home Delivered Meal - Missed Delivery
+113,Home Delivered Meal Complaint
+114,Homeless Encampment
+115,Homeless Person Assistance
+116,Homeless Street Condition
+117,Illegal Animal Kept as Pet
+118,Illegal Animal Sold
+119,Illegal Dumping
+120,Illegal Fireworks
+121,Illegal Parking
+122,Illegal Posting
+123,Illegal Tree Damage
+124,Incorrect Data
+125,Indoor Air Quality
+126,Indoor Sewage
+127,Industrial Waste
+128,Institution Disposal Complaint
+129,Internal Code
+130,Investigations and Discipline (IAD)
+131,Lead
+132,Leaning Bar
+133,Lifeguard
+134,LinkNYC
+135,Litter Basket / Request
+136,Litter Basket Complaint
+137,Litter Basket Request
+138,Lost Property
+139,Lot Condition
+140,MOLD
+141,Maintenance or Facility
+142,Mass Gathering Complaint
+143,Miscellaneous Categories
+144,Missed Collection
+145,Missed Collection (All Materials)
+146,Mobile Food Vendor
+147,Mold
+148,Mosquitoes
+149,Municipal Parking Facility
+150,New Tree Request
+151,Noise
+152,Noise - Commercial
+153,Noise - Helicopter
+154,Noise - House of Worship
+155,Noise - Park
+156,Noise - Residential
+157,Noise - Street/Sidewalk
+158,Noise - Vehicle
+159,Non-Emergency Police Matter
+160,Non-Residential Heat
+161,NonCompliance with Phased Reopening
+162,OUTSIDE BUILDING
+163,Obstruction
+164,Oil or Gas Spill
+165,Other Enforcement
+166,Outdoor Dining
+167,Outside Building
+168,Overflowing Litter Baskets
+169,Overflowing Recycling Baskets
+170,Overgrown Tree/Branches
+171,PAINT/PLASTER
+172,PLUMBING
+173,Paint/Plaster
+174,Panhandling
+175,Peeling Paint
+176,Pet Sale
+177,Pet Shop
+178,Plant
+179,Plumbing
+180,Poison Ivy
+181,Posting Advertisement
+182,Private School Vaccine Mandate Non-Compliance
+183,Private or Charter School Reopening
+184,Public Payphone Complaint
+185,Public Toilet
+186,Quality of Life
+187,Radioactive Material
+188,Real Time Enforcement
+189,Recycling Basket Complaint
+190,Recycling Enforcement
+191,Request Large Bulky Item Collection
+192,Residential Disposal Complaint
+193,Retailer Complaint
+194,Rodent
+195,Root/Sewer/Sidewalk Condition
+196,SAFETY
+197,SNW
+198,SRDE
+199,SRGOVG
+200,Safety
+201,Sanitation Condition
+202,Sanitation Worker or Vehicle Complaint
+203,Scaffold Safety
+204,School Maintenance
+205,Seasonal Collection
+206,Sewer
+207,Sewer Maintenance
+208,Sidewalk Condition
+209,Smoking
+210,Smoking or Vaping
+211,Snow
+212,Snow Removal
+213,Snow or Ice
+214,Special Natural Area District (SNAD)
+215,Special Operations
+216,Special Projects Inspection Team (SPIT)
+217,Squeegee
+218,Stalled Sites
+219,Standing Water
+220,Storm
+221,Street Condition
+222,Street Light Condition
+223,Street Sign - Damaged
+224,Street Sign - Dangling
+225,Street Sign - Missing
+226,Street Sweeping Complaint
+227,Sustainability Enforcement
+228,Sweeping/Inadequate
+229,Sweeping/Missed
+230,Sweeping/Missed-Inadequate
+231,Tanning
+232,Tattooing
+233,Taxi Complaint
+234,Taxi Compliment
+235,Taxi Licensee Complaint
+236,Taxi Report
+237,Tobacco or Non-Tobacco Sale
+238,Traffic
+239,Traffic Signal Condition
+240,Trans Fat
+241,Transfer Station Complaint
+242,Tunnel Condition
+243,UNSANITARY CONDITION
+244,Unleashed Dog
+245,Unlicensed Dog
+246,Unsanitary Animal Facility
+247,Unsanitary Animal Pvt Property
+248,Unsanitary Condition
+249,Unsanitary Pigeon Condition
+250,Unspecified
+251,Unstable Building
+252,Uprooted Stump
+253,Urinating in Public
+254,Vacant Lot
+255,Vaccine Mandate Non-Compliance
+256,Vending
+257,Vendor Enforcement
+258,Violation of Park Rules
+259,WATER LEAK
+260,Water Conservation
+261,Water Drainage
+262,Water Leak
+263,Water Maintenance
+264,Water Quality
+265,Water System
+266,Wayfinding
+267,Window Guard
+268,Wood Pile Remaining
+269,X-Ray Machine/Equipment
+270,ZTESTINT

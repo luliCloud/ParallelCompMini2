@@ -44,6 +44,8 @@ using mini2::DeleteResponse;
 using mini2::SOACountKind;
 using mini2::SOACountRequest;
 using mini2::SOACountResponse;
+using mini2::SOATopKRequest;
+using mini2::SOATopKResponse;
 
 struct Options {
     std::string server;
@@ -68,6 +70,7 @@ struct Options {
     std::optional<std::int64_t> created_date_start;
     std::optional<std::int64_t> created_date_end;
     std::optional<std::uint32_t> status_id; // 0 for In Progress, 1 for Closed
+    std::optional<std::uint32_t> top_k;
     bool delete_all = false;
     bool quiet_chunks = false;
     bool leaf_buffered_streaming = false;
@@ -79,7 +82,8 @@ bool IsCommand(std::string_view token) {
         || token == "forward-chunked"
         || token == "count-created-date-range"
         || token == "count-by-agency-and-created-date-range"
-        || token == "count-by-status-and-created-date-range";
+        || token == "count-by-status-and-created-date-range"
+        || token == "top-k-complaints";
 }
 
 std::string GenerateRequestId(std::string_view prefix) {
@@ -221,6 +225,8 @@ Options ParseArgs(int argc, char** argv) {
             options.created_date_end = ParseInt64(RequireValue(index, argc, argv, token), token);
         } else if (token == "--status-id") {
             options.status_id = ParseUint32(RequireValue(index, argc, argv, token), token);
+        } else if (token == "--top-k") {
+            options.top_k = ParseUint32(RequireValue(index, argc, argv, token), token);
         } else if (token == "--all") {
             options.delete_all = true;
         } else if (token == "--quiet-chunks") {
@@ -406,6 +412,18 @@ SOACountRequest BuildCountByStatusAndCreatedDateRangeRequest(const Options& opti
     return request;
 }
 
+SOATopKRequest BuildTopKComplaintsRequest(const Options& options) {
+    if (!options.created_date_start || !options.created_date_end || !options.top_k) {
+        ThrowUsageError("Missing required options for top-k-complaints: --created-date-start, --created-date-end and --top-k");
+    }
+    SOATopKRequest request;
+    request.set_request_id(options.request_id.value_or(GenerateRequestId("client-soa-topk")));
+    request.set_created_date_start(*options.created_date_start);
+    request.set_created_date_end(*options.created_date_end);
+    request.set_top_k(*options.top_k);
+    return request;
+}
+
 void PrintQueryRequest(const QueryRequest& request) {
     std::cout << "query request:\n";
     std::cout << "   request_id = " << request.request_id() << '\n';
@@ -495,6 +513,18 @@ void PrintCountResponse(const SOACountResponse& response, double elapsed_ms) {
     std::cout << "   from_node = " << response.from_node() << '\n';
     std::cout << "   count = " << response.count() << '\n';
     std::cout << "   count_query_rtt_ms = " << elapsed_ms << '\n';
+}
+
+void PrintTopKResponse(const SOATopKResponse& response, double elapsed_ms) {
+    std::cout << "SOA top-k complaints response:\n";
+    std::cout << "   response_request_id = " << response.request_id() << '\n';
+    std::cout << "   from_node = " << response.from_node() << '\n';
+    std::cout << "   entries_returned = " << response.entries_size() << '\n';
+    for (const auto& entry : response.entries()) {
+        std::cout << "   problem_id = " << entry.key()
+                  << " count = " << entry.count() << '\n';
+    }
+    std::cout << "   top_k_query_rtt_ms = " << elapsed_ms << '\n';
 }
 
 void PrintInsertRequest(const InsertRequest& request) {
@@ -821,9 +851,25 @@ int main(int argc, char** argv) {
                     grpc::ClientContext context;
                     ConfigureContext(context, options.timeout_seconds);
                     return stub->CountQuery(&context, request, &response);
-                });
+            });
             const auto [response, rpc_ms] = future.get();
             PrintCountResponse(response, rpc_ms);
+        } else if (options.command == "top-k-complaints") {
+            const auto request = BuildTopKComplaintsRequest(options);
+            std::cout << "SOA Top-K Complaints request: \n";
+            std::cout << "   request_id = " << request.request_id() << '\n';
+            std::cout << "   created_date_start = " << request.created_date_start() << '\n';
+            std::cout << "   created_date_end = " << request.created_date_end() << '\n';
+            std::cout << "   top_k = " << request.top_k() << '\n';
+
+            auto future = SubmitUnaryRpc<SOATopKResponse>(
+                [&](SOATopKResponse& response) {
+                    grpc::ClientContext context;
+                    ConfigureContext(context, options.timeout_seconds);
+                    return stub->TopKQuery(&context, request, &response);
+                });
+            const auto [response, rpc_ms] = future.get();
+            PrintTopKResponse(response, rpc_ms);
         } else {
             ThrowUsageError("Unknown command: " + options.command);
         }

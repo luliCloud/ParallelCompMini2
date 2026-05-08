@@ -11,6 +11,190 @@ Start the 9-node cluster first:
 
 Run the following commands from the project root.
 
+## SOA Related Function Tests
+
+These functions require data nodes to load SOA data. Use `dataset_mode: "soa"`
+or `dataset_mode: "both"` in the leaf node YAML files before starting the
+cluster. Keep the global dictionary paths enabled on every data node so
+multi-node results use the same categorical ids:
+
+```yaml
+agency_dict_path: "config/global_agency_ids.csv"
+problem_dict_path: "config/global_problem_ids.csv"
+borough_dict_path: "config/global_borough_ids.csv"
+status_dict_path: "config/global_status_ids.csv"
+```
+
+### Count by created-date range
+
+```bash
+./build/bin/client -s localhost:50051 -t 120 count-created-date-range \
+  --created-date-start 1577836800 \
+  --created-date-end 1609459199 \
+  --request-id count-created-2020
+
+SOA count response:
+   response_request_id = count-created-2020
+   from_node = A
+   count = 2939532
+   count_query_rtt_ms = 292.43
+   total_time_ms = 295.94
+
+# single node (C only, full data)
+./build/bin/client -s localhost:50053 -t 120 count-created-date-range \
+  --created-date-start 1577836800 \
+  --created-date-end 1609459199 \
+  --request-id count-created-2020
+
+SOA count response:
+   response_request_id = count-created-2020
+   from_node = C
+   count = 2939532
+   count_query_rtt_ms = 406.68
+   total_time_ms = 409.92
+```
+
+### Count by agency and created-date range
+
+```bash
+./build/bin/client -s localhost:50051 -t 120 count-by-agency-and-created-date-range \
+  --agency-id 10 \
+  --created-date-start 1577836800 \
+  --created-date-end 1609459199 \
+  --request-id count-agency10-2020
+
+SOA count response:
+   response_request_id = count-agency10-2020
+   from_node = A
+   count = 10296
+   count_query_rtt_ms = 334.01
+   total_time_ms = 338.24
+
+# single node (C only, full data)
+./build/bin/client -s localhost:50053 -t 120 count-by-agency-and-created-date-range \
+  --agency-id 10 \
+  --created-date-start 1577836800 \
+  --created-date-end 1609459199 \
+  --request-id count-agency10-2020-single
+  SOA count response:
+   response_request_id = count-agency10-2020-single
+   from_node = C
+   count = 10296
+   count_query_rtt_ms = 440.45
+   total_time_ms = 443.79
+```
+
+### Count by status and created-date range
+
+```bash
+./build/bin/client -s localhost:50051 -t 120 count-by-status-and-created-date-range \
+  --status-id 1 \
+  --created-date-start 1577836800 \
+  --created-date-end 1609459199 \
+  --request-id count-status1-2020
+
+SOA count response:
+   response_request_id = count-status1-2020
+   from_node = A
+   count = 2881953
+   count_query_rtt_ms = 303.48
+   total_time_ms = 306.89
+
+# single node (C only, full data)
+./build/bin/client -s localhost:50053 -t 120 count-by-status-and-created-date-range \
+  --status-id 1 \
+  --created-date-start 1577836800 \
+  --created-date-end 1609459199 \
+  --request-id count-status1-2020-single
+
+SOA count response:
+   response_request_id = count-status1-2020-single
+   from_node = C
+   count = 2881953
+   count_query_rtt_ms = 399.82
+   total_time_ms = 403.29
+```
+
+### Top-k complaint/problem types in created-date range
+
+```bash
+# multi-node cluster
+./build/bin/client -s localhost:50051 -t 120 top-k-complaints \
+  --created-date-start 1577836800 \
+  --created-date-end 1609459199 \
+  --top-k 10 \
+  --request-id topk-complaints-2020
+
+from_node = A
+   entries_returned = 10
+   problem_id = 156 count = 406378
+   problem_id = 191 count = 281969
+   problem_id = 157 count = 206606
+   problem_id = 121 count = 194082
+   problem_id = 104 count = 164741
+   problem_id = 19 count = 116591
+   problem_id = 159 count = 83924
+   problem_id = 158 count = 81137
+   problem_id = 53 count = 73068
+   problem_id = 222 count = 65008
+   top_k_query_rtt_ms = 350.94
+   total_time_ms = 356.13
+
+# single node (C only, full data)
+./build/bin/client -s localhost:50053 -t 120 top-k-complaints \
+  --created-date-start 1577836800 \
+  --created-date-end 1609459199 \
+  --top-k 10 \
+  --request-id topk-complaints-2020-single
+from_node = C
+   entries_returned = 10
+problem_id = 156 count = 406378
+   problem_id = 191 count = 281969
+   problem_id = 157 count = 206606
+   problem_id = 121 count = 194082
+   problem_id = 104 count = 164741
+   problem_id = 19 count = 116591
+   problem_id = 159 count = 83924
+   problem_id = 158 count = 81137
+   problem_id = 53 count = 73068
+   problem_id = 222 count = 65008
+   top_k_query_rtt_ms = 442.39
+   total_time_ms = 448.31
+```
+
+Python client version:
+
+```bash
+.venv/bin/python client_py/client.py -s localhost:50051 -t 120 top-k-complaints \
+  --created-date-start 1577836800 \
+  --created-date-end 1609459199 \
+  --top-k 10 \
+  --request-id topk-complaints-2020
+```
+
+## Streaming Mode Summary
+
+### 1. `forward-chunked`
+
+- Internal tree path: unary `Forward` RPC returning one large `QueryResponse`.
+- A-to-client path: pull-based chunks through `StartForwardChunks` and `GetForwardChunk`.
+- Fast for small or medium results, especially when the large unary messages fit under the gRPC message-size limit.
+- Not true end-to-end streaming. Intermediate nodes materialize large subtree results, so large queries can fail or return partial results when a peer response exceeds the message-size limit.
+
+### 2. `forward-stream`
+
+- Internal tree path: every tree edge uses `ForwardStream` and sends `QueryChunkResponse` messages.
+- Leaf behavior: scans local data and builds protobuf chunks while scanning.
+- This is true end-to-end streaming: leaf nodes can send chunks upward through the tree, and A can stream them to the client.
+- More scalable with respect to message size, but slower in the current implementation because each leaf mixes dataset scanning, protobuf chunk construction, and streaming producer work.
+
+### 3. `forward-stream --leaf-buffered-streaming`
+
+- Internal tree path: every tree edge still uses `ForwardStream` and sends `QueryChunkResponse` messages.
+- Leaf behavior: first collects local matches into a `std::vector<Record>`, then converts that vector into protobuf chunks.
+- Middle nodes and A still only forward chunks; they do not aggregate full subtree results.
+- This is a practical hybrid: it keeps end-to-end tree streaming while making leaf-side scanning much faster than pure streaming.
+
 ## Chunk Size Benchmark
 
 Benchmark elapsed time across multiple chunk sizes. By default, this uses

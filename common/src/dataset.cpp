@@ -21,6 +21,7 @@
 bool Dataset::load_csv(
     const std::string& path,
     const std::string& agency_dict_path,
+    const std::string& problem_dict_path,
     const std::string& borough_dict_path,
     const std::string& status_dict_path) {
     records_.clear();
@@ -30,12 +31,18 @@ bool Dataset::load_csv(
     borough_dict_.clear();
 
     const bool use_predefined_agency = !agency_dict_path.empty();
+    const bool use_predefined_problem = !problem_dict_path.empty();
     const bool use_predefined_borough = !borough_dict_path.empty();
     const bool use_predefined_status = !status_dict_path.empty();
 
     if (use_predefined_agency &&
         !dataset_utils::load_predefined_ids<uint16_t>(
             agency_dict_path, agency_dict_, "Agency")) {
+        return false;
+    }
+    if (use_predefined_problem &&
+        !dataset_utils::load_predefined_ids<uint32_t>(
+            problem_dict_path, problem_dict_, "Problem")) {
         return false;
     }
     if (use_predefined_borough &&
@@ -140,7 +147,8 @@ bool Dataset::load_csv(
             // encode_id<> : encode new {k, v} into dict
             record.agency_id = dataset_utils::lookup_or_encode_id<uint16_t>(
                 agency_dict_, agency_value, use_predefined_agency, "Agency");
-            record.problem_id = dataset_utils::encode_id<uint32_t>(problem_dict_, problem_value);
+            record.problem_id = dataset_utils::lookup_or_encode_id<uint32_t>(
+                problem_dict_, problem_value, use_predefined_problem, "Problem");
             record.status_id = dataset_utils::lookup_or_encode_id<uint8_t>(
                 status_dict_, status_value, use_predefined_status, "Status");
             record.borough_id = dataset_utils::lookup_or_encode_id<uint8_t>(
@@ -151,7 +159,7 @@ bool Dataset::load_csv(
             if (!use_predefined_agency && !agency_existed) { // agency_existed == false: no dict entry for this idx existed before. 
                 agency_dict_.erase(agency_value);
             }
-            if (!problem_existed) {
+            if (!use_predefined_problem && !problem_existed) {
                 problem_dict_.erase(problem_value);
             }
             if (!use_predefined_status && !status_existed) {
