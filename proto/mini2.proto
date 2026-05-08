@@ -8,7 +8,6 @@ service NodeService {
   rpc Ping(PingRequest)           returns (PingResponse)          {}
   rpc Query(QueryRequest)         returns (QueryResponse)         {}
   rpc Forward(QueryRequest)       returns (QueryResponse)         {}
-  rpc ForwardStream(QueryRequest) returns (stream QueryChunkResponse) {}
   rpc Insert(InsertRequest)       returns (InsertResponse)        {}
   rpc Delete(DeleteRequest)       returns (DeleteResponse)        {}
   rpc CountQuery(SOACountRequest) returns (SOACountResponse)      {}
@@ -40,7 +39,8 @@ message QueryRequest {
   optional float  lon_min    = 7;
   optional float  lon_max    = 8;
   optional uint32 chunk_size = 9; // max records by each chunk
-  bool leaf_buffered_streaming = 10; // ForwardStream: leaf nodes collect local matches first, then stream chunks
+  bool leaf_buffered_streaming = 10; // ForwardChunks: leaf nodes collect local matches first, then stream chunks
+  bool internal_full_streaming = 11; // ForwardChunks: every tree edge pulls chunks with unary RPCs
 }
 
 message QueryResponse {

@@ -3,12 +3,14 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <condition_variable>
 #include <functional>
+#include <future>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 
 #include <grpcpp/server_context.h>
-#include <grpcpp/support/sync_stream.h>
 
 #include "ForwardResponseCache.h"
 #include "InsertRouteConfig.h"
@@ -19,7 +21,6 @@
 #include "query_SOA.hpp"
 
 using grpc::ServerContext;
-using grpc::ServerWriter;
 using grpc::Status;
 using mini2::NodeService;
 using mini2::QueryRequest;
@@ -97,9 +98,6 @@ public:
     Status Forward(ServerContext* context, const QueryRequest* request,
                    QueryResponse* response) override;
 
-    Status ForwardStream(ServerContext* context, const QueryRequest* request,
-                         ServerWriter<QueryChunkResponse>* writer) override;
-
     Status Insert(ServerContext* context, const InsertRequest* request,
                   InsertResponse* response) override;
 
@@ -109,8 +107,8 @@ public:
     Status CountQuery(ServerContext* context, const SOACountRequest* request, 
                       SOACountResponse* response) override;
 
-    // Status GroupByQuery(ServerContext* context, const SOAGroupByRequest* request, 
-    //                     SOAGroupByResponse* response) override;
+    Status GroupByQuery(ServerContext* context, const SOAGroupByRequest* request, 
+                        SOAGroupByResponse* response) override;
                 
     Status TopKQuery(ServerContext* context, const SOATopKRequest* request, 
                      SOATopKResponse* response) override;
@@ -142,6 +140,7 @@ private:
     std::uint64_t DeleteMatchingRecordsLocally(const DeleteRequest& request);
 
     // Streaming helper methods
+    struct ChunkSession;
     std::string CreateChunkSessionId(const std::string& request_id) const;
     bool StreamLocalForwardChunks(
         ServerContext* context,
@@ -155,17 +154,33 @@ private:
         std::uint32_t chunk_size,
         const std::function<bool(QueryChunkResponse*)>& emit_chunk,
         std::uint64_t* local_matched_record_count);
+    void ProduceForwardChunksForSession(
+        std::shared_ptr<ChunkSession> session,
+        QueryRequest request);
+    bool PushChunkToSession(
+        const std::shared_ptr<ChunkSession>& session,
+        QueryChunkResponse chunk);
+    void CloseChunkSession(
+        const std::shared_ptr<ChunkSession>& session,
+        const std::string& error_message = "");
 
     struct ChunkSession {
+        std::string session_id;
         std::string request_id;
         std::string from_node;
         std::uint32_t total_chunks = 0;
         std::uint32_t chunk_size = 0;
-        std::vector<mini2::Record> records;
+        std::uint64_t total_records = 0;
+        std::vector<QueryChunkResponse> chunks;
+        std::mutex mutex;
+        std::condition_variable ready;
+        bool closed = false;
+        bool cancelled = false;
+        std::string error_message;
     };
 
     std::mutex chunk_sessions_mutex_;
-    std::unordered_map<std::string, ChunkSession> chunk_sessions_; // session_id -> session info
+    std::unordered_map<std::string, std::shared_ptr<ChunkSession>> chunk_sessions_; // session_id -> session info
 
     std::string node_id_;
     uint16_t port_;

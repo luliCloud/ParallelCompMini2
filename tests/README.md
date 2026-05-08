@@ -115,6 +115,22 @@ SOA count response:
    total_time_ms = 403.29
 ```
 
+### Group by borough summary count in created-date range
+
+```bash
+# multi-node cluster
+./build/bin/client -s localhost:50051 -t 120 group-by-borough-created-date-range \
+  --created-date-start 1577836800 \
+  --created-date-end 1609459199 \
+  --request-id groupby-borough-2020
+
+# single node (C only, full data)
+./build/bin/client -s localhost:50053 -t 120 group-by-borough-created-date-range \
+  --created-date-start 1577836800 \
+  --created-date-end 1609459199 \
+  --request-id groupby-borough-2020-single
+```
+
 ### Top-k complaint/problem types in created-date range
 
 ```bash
@@ -174,144 +190,68 @@ Python client version:
 
 ## Streaming Mode Summary
 
-### 1. `forward-chunked`
+All three modes use unary RPCs only. The gRPC streaming RPC was removed.
+
+### 1. Old chunked pull: `forward-chunked`
 
 - Internal tree path: unary `Forward` RPC returning one large `QueryResponse`.
-- A-to-client path: pull-based chunks through `StartForwardChunks` and `GetForwardChunk`.
-- Fast for small or medium results, especially when the large unary messages fit under the gRPC message-size limit.
-- Not true end-to-end streaming. Intermediate nodes materialize large subtree results, so large queries can fail or return partial results when a peer response exceeds the message-size limit.
+- A-to-client path: pull-based chunks through `StartForwardChunks` and
+  `GetForwardChunk`.
+- This is the old baseline. It does not use the gRPC streaming API, but large
+  internal peer responses can still exceed the gRPC message-size limit.
 
-### 2. `forward-stream`
+### 2. Internal full streaming: `forward-chunked --internal-full-streaming`
 
-- Internal tree path: every tree edge uses `ForwardStream` and sends `QueryChunkResponse` messages.
-- Leaf behavior: scans local data and builds protobuf chunks while scanning.
-- This is true end-to-end streaming: leaf nodes can send chunks upward through the tree, and A can stream them to the client.
-- More scalable with respect to message size, but slower in the current implementation because each leaf mixes dataset scanning, protobuf chunk construction, and streaming producer work.
+- Internal tree path: application-level chunk pull through unary RPCs:
+  `StartForwardChunks`, `GetForwardChunk`, and `CancelChunks`.
+- A-to-client path: the same pull-based chunk API.
+- This does not use the gRPC streaming API. Each node creates a chunk session,
+  pulls chunks from its children, and exposes chunks to its parent/client.
+- Default leaf behavior scans local data and builds protobuf chunks while
+  scanning, similar to the old pure streaming mode.
 
-### 3. `forward-stream --leaf-buffered-streaming`
+### 3. Leaf-buffered streaming: `forward-chunked --leaf-buffered-streaming`
 
-- Internal tree path: every tree edge still uses `ForwardStream` and sends `QueryChunkResponse` messages.
+- Internal tree path: application-level chunk pull through unary RPCs.
 - Leaf behavior: first collects local matches into a `std::vector<Record>`, then converts that vector into protobuf chunks.
-- Middle nodes and A still only forward chunks; they do not aggregate full subtree results.
-- This is a practical hybrid: it keeps end-to-end tree streaming while making leaf-side scanning much faster than pure streaming.
+- Middle nodes and A still forward chunks from child sessions.
+- This is the practical hybrid version without gRPC streaming RPCs.
 
 ## Chunk Size Benchmark
 
 Benchmark elapsed time across multiple chunk sizes. By default, this uses
 `--quiet-chunks` to reduce terminal printing overhead and writes a CSV.
+The benchmark script uses `forward-chunked` for every mode:
+
+- `chunked`: old internal unary `Forward` large response.
+- `stream-pure`: adds `--internal-full-streaming`.
+- `stream-leaf`: adds `--leaf-buffered-streaming`.
 
 Agency, all three modes:
 
 ```bash
 python3 tests/benchmark_chunk_sizes.py \
   --query agency \
-  --chunk-sizes 500,1000,2000,5000,10000,20000,50000 \
+  --chunk-sizes 50,50,100,200,500,1000,2000,5000,10000,20000,50000 \
   --output tests/chunk_size_agency.csv
 ```
 
-Borough, streaming modes only:
+Borough, all three modes:
 
 ```bash
 python3 tests/benchmark_chunk_sizes.py \
   --query borough \
-  --mode stream-pure \
-  --mode stream-leaf \
-  --chunk-sizes 500,1000,2000,5000,10000,20000,50000 \
-  --output tests/chunk_size_borough_streaming.csv
+  --chunk-sizes 50,50,100,200,500,1000,2000,5000,10000,20000,50000 \
+  --output tests/chunk_size_borough.csv
 ```
 
-Geo, leaf-vector streaming only (main tests):
+Geo, all three modes:
 
 ```bash
 python3 tests/benchmark_chunk_sizes.py \
   --query geo \
-  --mode stream-leaf \
-  --chunk-sizes 50,50,100,250,500,1000,2000,5000,10000,20000,50000 \
-  --output tests/chunk_size_geo_leaf.csv
-
-  # result
-  running query=geo mode=stream-leaf chunk_size=50 repeat=1
-  records=3607904 chunks=72160 total_ms=9259.44
-running query=geo mode=stream-leaf chunk_size=50 repeat=1
-  records=3607904 chunks=72160 total_ms=8953.74
-running query=geo mode=stream-leaf chunk_size=100 repeat=1
-  records=3607904 chunks=36083 total_ms=8381.07
-running query=geo mode=stream-leaf chunk_size=250 repeat=1
-  records=3607904 chunks=14434 total_ms=7731.50
-running query=geo mode=stream-leaf chunk_size=500 repeat=1
-  records=3607904 chunks=7219 total_ms=7621.81
-running query=geo mode=stream-leaf chunk_size=1000 repeat=1
-  records=3607904 chunks=3611 total_ms=7482.74
-running query=geo mode=stream-leaf chunk_size=2000 repeat=1
-  records=3607904 chunks=1807 total_ms=7252.41
-running query=geo mode=stream-leaf chunk_size=5000 repeat=1
-  records=3607904 chunks=724 total_ms=7229.30
-running query=geo mode=stream-leaf chunk_size=10000 repeat=1
-  records=3607904 chunks=364 total_ms=7124.38
-running query=geo mode=stream-leaf chunk_size=20000 repeat=1
-  records=3607904 chunks=184 total_ms=7449.12
-running query=geo mode=stream-leaf chunk_size=50000 repeat=1
-  records=3607904 chunks=76 total_ms=7375.96
-wrote tests/chunk_size_geo_leaf.csv
-
-python3 tests/benchmark_chunk_sizes.py \
-  --query borough \
-  --mode stream-leaf \
-  --chunk-sizes 50,50,100,250,500,1000,2000,5000,10000,20000,50000 \
-  --output tests/chunk_size_borough_leaf.csv
-
-running query=borough mode=stream-leaf chunk_size=50 repeat=1
-  records=4311938 chunks=86242 total_ms=12090.71
-running query=borough mode=stream-leaf chunk_size=50 repeat=1
-  records=4311938 chunks=86242 total_ms=11409.76
-running query=borough mode=stream-leaf chunk_size=100 repeat=1
-  records=4311938 chunks=43123 total_ms=9617.53
-running query=borough mode=stream-leaf chunk_size=250 repeat=1
-  records=4311938 chunks=17251 total_ms=9390.08
-running query=borough mode=stream-leaf chunk_size=500 repeat=1
-  records=4311938 chunks=8627 total_ms=8871.03
-running query=borough mode=stream-leaf chunk_size=1000 repeat=1
-  records=4311938 chunks=4315 total_ms=8790.38
-running query=borough mode=stream-leaf chunk_size=2000 repeat=1
-  records=4311938 chunks=2160 total_ms=9143.01
-running query=borough mode=stream-leaf chunk_size=5000 repeat=1
-  records=4311938 chunks=866 total_ms=8744.51
-running query=borough mode=stream-leaf chunk_size=10000 repeat=1
-  records=4311938 chunks=435 total_ms=8604.32
-running query=borough mode=stream-leaf chunk_size=20000 repeat=1
-  records=4311938 chunks=219 total_ms=8547.50
-running query=borough mode=stream-leaf chunk_size=50000 repeat=1
-  records=4311938 chunks=90 total_ms=8608.15
-wrote tests/chunk_size_borough_leaf.csv
-
-python3 tests/benchmark_chunk_sizes.py \
-  --query agency \
-  --mode stream-leaf \
-  --chunk-sizes 50,50,100,250,500,1000,2000,5000,10000,20000,50000 \
-  --output tests/chunk_size_agency_leaf.csv
-running query=agency mode=stream-leaf chunk_size=50 repeat=1
-  records=172402 chunks=3451 total_ms=778.85
-running query=agency mode=stream-leaf chunk_size=50 repeat=1
-  records=172402 chunks=3451 total_ms=630.82
-running query=agency mode=stream-leaf chunk_size=100 repeat=1
-  records=172402 chunks=1727 total_ms=575.73
-running query=agency mode=stream-leaf chunk_size=250 repeat=1
-  records=172402 chunks=693 total_ms=540.39
-running query=agency mode=stream-leaf chunk_size=500 repeat=1
-  records=172402 chunks=348 total_ms=534.15
-running query=agency mode=stream-leaf chunk_size=1000 repeat=1
-  records=172402 chunks=176 total_ms=515.27
-running query=agency mode=stream-leaf chunk_size=2000 repeat=1
-  records=172402 chunks=89 total_ms=514.66
-running query=agency mode=stream-leaf chunk_size=5000 repeat=1
-  records=172402 chunks=38 total_ms=521.17
-running query=agency mode=stream-leaf chunk_size=10000 repeat=1
-  records=172402 chunks=20 total_ms=520.11
-running query=agency mode=stream-leaf chunk_size=20000 repeat=1
-  records=172402 chunks=11 total_ms=509.77
-running query=agency mode=stream-leaf chunk_size=50000 repeat=1
-  records=172402 chunks=7 total_ms=517.20
-wrote tests/chunk_size_agency_leaf.csv
+  --chunk-sizes 50,50,100,200,500,1000,2000,5000,10000,20000,50000 \
+  --output tests/chunk_size_geo.csv
 ```
 
 Add `--print-chunks` if you want the client to print every chunk during the
@@ -319,170 +259,124 @@ benchmark.
 
 ## Agency Query
 
-### Old chunked pull (cannot get full result due to timeout)
+### 1. Old chunked pull: internal unary large response
 
 ```bash
 ./build/bin/client -s localhost:50051 -t 120 forward-chunked \
   --agency-id 10 \
-  --chunk-size 2000 \
-  --request-id agency-chunked
-# full result (maybe not exceed 64MB gRPC message limit):
-#forward-chunked response:
-#   records_received = 172402
-#   session_cancelled = 1
-#   total_time_ms = 236.12
+  --chunk-size 5000 \
+  --quiet-chunks \
+  --request-id agency-old-chunked
 
 # single node
 ./build/bin/client -s localhost:50053 -t 120 forward-chunked \
   --agency-id 10 \
-  --chunk-size 2000 \
-  --request-id agency-chunked-single
+  --chunk-size 5000 \
+  --quiet-chunks \
+  --request-id agency-old-chunked-single
 ```
 
-### Pure end-to-end streaming (can't get full result for 9 nodes, but can get full result for single node)
+### 2. Internal full streaming: tree-wide unary chunk pull
 
 ```bash
-./build/bin/client -s localhost:50051 -t 120 forward-stream \
+./build/bin/client -s localhost:50051 -t 120 forward-chunked \
   --agency-id 10 \
-  --chunk-size 2000 \
-  --request-id agency-stream-pure
-# example result: 
-#forward-stream response:
-#   chunks_received = 38
-#   records_received = 172402
-#   forward_stream_ms = 38600.38
-#   total_time_ms = 38604.34
+  --chunk-size 5000 \
+  --internal-full-streaming \
+  --quiet-chunks \
+  --request-id agency-internal-full
 
 # single node
-./build/bin/client -s localhost:50053 -t 120 forward-stream \
+./build/bin/client -s localhost:50053 -t 120 forward-chunked \
   --agency-id 10 \
-  --chunk-size 2000 \
-  --request-id agency-stream-pure-single  
-
-#forward-stream chunk:
-#   from_node = C
-#   chunk_index = 28
-#   records_returned = 5000
-#   done = 0
-#   elapsed_ms = 117014.05 
-# Failed to connect/send request: RPC failed: 4 - Deadline Exceeded    
+  --chunk-size 5000 \
+  --internal-full-streaming \
+  --quiet-chunks \
+  --request-id agency-internal-full-single
 ```
 
-### Leaf-vector streaming
+### 3. Leaf-buffered streaming: tree-wide unary chunk pull
 
 ```bash
-./build/bin/client -s localhost:50051 -t 120 forward-stream \
+./build/bin/client -s localhost:50051 -t 120 forward-chunked \
   --agency-id 10 \
-  --chunk-size 2000 \
+  --chunk-size 5000 \
   --leaf-buffered-streaming \
-  --request-id agency-stream-leaf
-# successful response example:
-# forward-stream response:
-#   chunks_received = 38
-#   records_received = 172402
-#   forward_stream_ms = 629.10
-#   total_time_ms = 632.71
+  --quiet-chunks \
+  --request-id agency-leaf-buffered
 
 # single node
-./build/bin/client -s localhost:50053 -t 120 forward-stream \
+./build/bin/client -s localhost:50053 -t 120 forward-chunked \
   --agency-id 10 \
-  --chunk-size 2000 \
+  --chunk-size 5000 \
   --leaf-buffered-streaming \
-  --request-id agency-stream-leaf-single
-
-# successful response example:
-# forward-stream response:
-#   chunks_received = 35
-#   records_received = 172402
-#   forward_stream_ms = 1677.03
-#   total_time_ms = 1681.16
+  --quiet-chunks \
+  --request-id agency-leaf-buffered-single
 ```
 
 ## Borough Query
 
-### Old chunked pull
+### 1. Old chunked pull: internal unary large response
 
 ```bash
 ./build/bin/client -s localhost:50051 -t 120 forward-chunked \
   --borough-id 1 \
-  --chunk-size 2000 \
-  --request-id borough-chunked
-  # partial results
-  #forward-chunked response:
-  # records_received = 1497106
-  # session_cancelled = 1
-  # total_time_ms = 1474.05
+  --chunk-size 5000 \
+  --quiet-chunks \
+  --request-id borough-old-chunked
+
+# This old baseline can fail or return partial results if an internal
+# QueryResponse exceeds the gRPC message-size limit.
 
 # single node
 ./build/bin/client -s localhost:50053 -t 120 forward-chunked \
-    --borough-id 1 \    
-    --chunk-size 2000 \
-    --request-id borough-chunked-single
+  --borough-id 1 \
+  --chunk-size 5000 \
+  --quiet-chunks \
+  --request-id borough-old-chunked-single
 ```
 
-### Pure end-to-end streaming
+### 2. Internal full streaming: tree-wide unary chunk pull
 
 ```bash
-./build/bin/client -s localhost:50051 -t 120 forward-stream \
+./build/bin/client -s localhost:50051 -t 120 forward-chunked \
   --borough-id 1 \
-  --chunk-size 2000 \
-  --request-id borough-stream-pure
-# successful response example:
-#forward-stream response:
-#   chunks_received = 866
-#   records_received = 4311938
-#   forward_stream_ms = 38741.94
-#   total_time_ms = 38745.56
+  --chunk-size 5000 \
+  --internal-full-streaming \
+  --quiet-chunks \
+  --request-id borough-internal-full
 
 # single node
-./build/bin/client -s localhost:50053 -t 120 forward-stream \
+./build/bin/client -s localhost:50053 -t 120 forward-chunked \
   --borough-id 1 \
-  --chunk-size 2000 \
-  --request-id borough-stream-pure-single
-
-# partial successful response example:
-#forward-stream chunk:
-#   from_node = C
-#   chunk_index = 642
-#   records_returned = 5000
-#   done = 0
-#   elapsed_ms = 119834.87
-#Failed to connect/send request: RPC failed: 4 - Deadline Exceeded
+  --chunk-size 5000 \
+  --internal-full-streaming \
+  --quiet-chunks \
+  --request-id borough-internal-full-single
 ```
 
-### Leaf-vector streaming
+### 3. Leaf-buffered streaming: tree-wide unary chunk pull
 
 ```bash
-./build/bin/client -s localhost:50051 -t 120 forward-stream \
+./build/bin/client -s localhost:50051 -t 120 forward-chunked \
   --borough-id 1 \
-  --chunk-size 2000 \
+  --chunk-size 5000 \
   --leaf-buffered-streaming \
-  --request-id borough-stream-leaf
-  # successful response example:
-  #forward-stream response:
-  # chunks_received = 866
-  # records_received = 4311938
-  # forward_stream_ms = 9588.37
-  # total_time_ms = 9591.89
+  --quiet-chunks \
+  --request-id borough-leaf-buffered
 
 # single node
-./build/bin/client -s localhost:50053 -t 120 forward-stream \
+./build/bin/client -s localhost:50053 -t 120 forward-chunked \
   --borough-id 1 \
-  --chunk-size 2000 \
+  --chunk-size 5000 \
   --leaf-buffered-streaming \
-  --request-id borough-stream-leaf-single
-
-# successful response example:
-#forward-stream response:
-#   chunks_received = 863
-#   records_received = 4311938
-#   forward_stream_ms = 37319.13
-#   total_time_ms = 37322.99   
+  --quiet-chunks \
+  --request-id borough-leaf-buffered-single
 ```
 
 ## Geo Query
 
-### Old chunked pull
+### 1. Old chunked pull: internal unary large response
 
 ```bash
 ./build/bin/client -s localhost:50051 -t 120 forward-chunked \
@@ -490,13 +384,12 @@ benchmark.
   --lat-max 40.8 \
   --lon-min -74.0 \
   --lon-max -73.9 \
-  --chunk-size 2000 \
-  --request-id geo-chunked
-# partial result
-#forward-chunked response:
-#   records_received = 1221955
-#   session_cancelled = 1
-#   total_time_ms = 1122.61
+  --chunk-size 5000 \
+  --quiet-chunks \
+  --request-id geo-old-chunked
+
+# This old baseline can fail or return partial results if an internal
+# QueryResponse exceeds the gRPC message-size limit.
 
 # single node
 ./build/bin/client -s localhost:50053 -t 120 forward-chunked \
@@ -504,80 +397,57 @@ benchmark.
   --lat-max 40.8 \
   --lon-min -74.0 \
   --lon-max -73.9 \
-  --chunk-size 2000 \
-  --request-id geo-chunked-single
-
+  --chunk-size 5000 \
+  --quiet-chunks \
+  --request-id geo-old-chunked-single
 ```
 
-### Pure end-to-end streaming
+### 2. Internal full streaming: tree-wide unary chunk pull
 
 ```bash
-./build/bin/client -s localhost:50051 -t 120 forward-stream \
+./build/bin/client -s localhost:50051 -t 120 forward-chunked \
   --lat-min 40.7 \
   --lat-max 40.8 \
   --lon-min -74.0 \
   --lon-max -73.9 \
-  --chunk-size 2000 \
-  --request-id geo-stream-pure
-
-# successful response example: (longer than leaf streaming.)
-#forward-stream response:
-#   chunks_received = 724
-#   records_received = 3607904
-#   forward_stream_ms = 38738.43
-#   total_time_ms = 38741.46
+  --chunk-size 5000 \
+  --internal-full-streaming \
+  --quiet-chunks \
+  --request-id geo-internal-full
 
 # single node
-./build/bin/client -s localhost:50053 -t 120 forward-stream \
+./build/bin/client -s localhost:50053 -t 120 forward-chunked \
   --lat-min 40.7 \
   --lat-max 40.8 \
   --lon-min -74.0 \
   --lon-max -73.9 \
-  --chunk-size 2000 \
-  --request-id geo-stream-pure
-
-# forward-stream chunk:
-#   from_node = C
-#   chunk_index = 544
-#   records_returned = 5000
-#   done = 0
-#   elapsed_ms = 119862.91
-#Failed to connect/send request: RPC failed: 4 - Deadline Exceeded
-
+  --chunk-size 5000 \
+  --internal-full-streaming \
+  --quiet-chunks \
+  --request-id geo-internal-full-single
 ```
 
-### Leaf-vector streaming
+### 3. Leaf-buffered streaming: tree-wide unary chunk pull
 
 ```bash
-./build/bin/client -s localhost:50051 -t 120 forward-stream \
+./build/bin/client -s localhost:50051 -t 120 forward-chunked \
   --lat-min 40.7 \
   --lat-max 40.8 \
   --lon-min -74.0 \
   --lon-max -73.9 \
-  --chunk-size 2000 \
+  --chunk-size 5000 \
   --leaf-buffered-streaming \
-  --request-id geo-stream-leaf
-  # forward-stream response:
-# chunks_received = 724
-#   records_received = 3607904
-#   forward_stream_ms = 7818.64
-#   total_time_ms = 7822.48
+  --quiet-chunks \
+  --request-id geo-leaf-buffered
 
 # single node
-./build/bin/client -s localhost:50053 -t 120 forward-stream \
+./build/bin/client -s localhost:50053 -t 120 forward-chunked \
   --lat-min 40.7 \
   --lat-max 40.8 \
   --lon-min -74.0 \
   --lon-max -73.9 \
-  --chunk-size 2000 \
+  --chunk-size 5000 \
   --leaf-buffered-streaming \
-  --request-id geo-stream-leaf
-
-# successful response example:
-# forward-stream response:
-#   chunks_received = 722
-#   records_received = 3607904
-#   forward_stream_ms = 30483.96
-#   total_time_ms = 30487.75
-
+  --quiet-chunks \
+  --request-id geo-leaf-buffered-single
 ```

@@ -13,7 +13,6 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CLIENT = PROJECT_ROOT / "build" / "bin" / "client"
 
-STREAM_MODES = {"stream-pure", "stream-leaf"}
 ALL_MODES = {"chunked", "stream-pure", "stream-leaf"}
 
 
@@ -102,13 +101,12 @@ def build_command(
         str(args.timeout),
     ]
 
-    if mode == "chunked":
-        command.append("forward-chunked")
-    else:
-        command.append("forward-stream")
+    command.append("forward-chunked")
 
     command.extend(query_args(args))
     command.extend(["--chunk-size", str(chunk_size)])
+    if mode == "stream-pure":
+        command.append("--internal-full-streaming")
     if mode == "stream-leaf":
         command.append("--leaf-buffered-streaming")
     if not args.print_chunks:
@@ -126,7 +124,6 @@ def parse_client_output(output: str) -> dict[str, str]:
     patterns = {
         "chunks_received": r"chunks_received\s*=\s*(\d+)",
         "records_received": r"records_received\s*=\s*(\d+)",
-        "forward_stream_ms": r"forward_stream_ms\s*=\s*([0-9.]+)",
         "total_time_ms": r"total_time_ms\s*=\s*([0-9.]+)",
     }
     parsed = {}
@@ -173,7 +170,6 @@ def main() -> int:
         "returncode",
         "chunks_received",
         "records_received",
-        "forward_stream_ms",
         "total_time_ms",
         "wall_time_ms",
         "error",
@@ -212,7 +208,6 @@ def main() -> int:
                         "returncode": returncode,
                         "chunks_received": parsed["chunks_received"],
                         "records_received": parsed["records_received"],
-                        "forward_stream_ms": parsed["forward_stream_ms"],
                         "total_time_ms": parsed["total_time_ms"],
                         "wall_time_ms": f"{wall_time_ms:.2f}",
                         "error": stderr.strip().replace("\n", " "),
