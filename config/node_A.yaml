@@ -1,15 +1,18 @@
 node_id: "A"
-host:    "0.0.0.0"
-port:    50051
+host: "0.0.0.0"
+port: 50051
 coordinator_only: true
+queue_mode: "fifo"
 enable_cache: true
+cache_policy: "lru"
+cache_max_entries: 32
 peers:
-  - id:   "B"
+  - id: "B"
     host: "localhost"
     port: 50052
-  - id:   "H"
+  - id: "H"
     host: "localhost"
     port: 50058
-  - id:   "I"
+  - id: "I"
     host: "localhost"
     port: 50059

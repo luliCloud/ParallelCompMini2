@@ -1,6 +1,7 @@
 node_id:      "D"
 host:         "0.0.0.0"
 port:         50054
+queue_mode: "fifo"
 enable_cache: false
 dataset_mode: "aos"
 # dataset_path: "benchmarks/workload_100k_time_shards_6/workload_100k_shard_03.csv"

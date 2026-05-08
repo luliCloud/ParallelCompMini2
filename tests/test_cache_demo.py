@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple cache test for Mini2.
+Cache test for Mini2.
 
 What this file does:
 1. Send one Forward request.

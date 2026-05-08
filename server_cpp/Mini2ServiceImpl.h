@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <cstddef>
 #include <cstdint>
 #include <condition_variable>
 #include <functional>
@@ -71,7 +72,10 @@ public:
     Mini2ServiceImpl(
         const std::string& node_id,
         uint16_t port,
-        bool enable_cache);
+        bool enable_cache,
+        const std::string& cache_policy,
+        std::size_t cache_max_entries,
+        QueueMode queue_mode);
     ~Mini2ServiceImpl() override;
 
     // Initialization

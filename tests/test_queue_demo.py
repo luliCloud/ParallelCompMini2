@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple queue test for Mini2.
+Queue test for Mini2.
 
 What this file does:
 1. Send 3 Forward requests to node A at the same time.

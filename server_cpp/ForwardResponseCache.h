@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <list>
 #include <mutex>
 #include <string>
@@ -14,6 +15,7 @@ public:
     ForwardResponseCache(
         std::string node_id,
         bool enabled,
+        std::string policy,
         std::size_t max_entries = 32);
 
     // Return a cached distributed response when the same filters were seen before.
@@ -21,7 +23,7 @@ public:
         const mini2::QueryRequest& request,
         mini2::QueryResponse* response);
 
-    // Save the latest distributed response and keep the cache bounded with LRU eviction.
+    // Save the latest distributed response and keep the cache bounded.
     void Store(
         const mini2::QueryRequest& request,
         const mini2::QueryResponse& response);
@@ -39,6 +41,7 @@ private:
 
     std::string node_id_;
     bool enabled_;
+    std::string policy_;
     std::size_t max_entries_;
     std::mutex cache_mutex_;
     std::list<std::string> cache_order_;
