@@ -187,6 +187,7 @@ message SOATopKRequest {
   int64 created_date_start = 2;
   int64 created_date_end = 3;
   uint32 top_k = 4;
+  bool return_all_counts = 5; // internal fan-out: return all complaint counts so parent can merge exact top-k
 }
 
 message SOATopKEntry {

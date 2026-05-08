@@ -168,6 +168,15 @@ def parse_args():
     count_by_status_parser.add_argument("--created-date-end", type=int, required=True)
     count_by_status_parser.add_argument("--status-id", type=int, default=None)
 
+    top_k_parser = subparsers.add_parser(
+        "top-k-complaints",
+        help="SOA top-k complaint/problem ids in created date range",
+    )
+    top_k_parser.add_argument("--request-id", default=None)
+    top_k_parser.add_argument("--created-date-start", type=int, required=True)
+    top_k_parser.add_argument("--created-date-end", type=int, required=True)
+    top_k_parser.add_argument("--top-k", type=int, required=True)
+
     return parser.parse_args()
 
 
@@ -328,6 +337,15 @@ def build_count_by_status_created_date_range_request(args):
     return request
 
 
+def build_top_k_complaints_request(args):
+    request = mini2_pb2.SOATopKRequest()
+    request.request_id = args.request_id or make_request_id("client-soa-topk")
+    request.created_date_start = args.created_date_start
+    request.created_date_end = args.created_date_end
+    request.top_k = args.top_k
+    return request
+
+
 def print_query_request(request):
     print("query request:")
     print(f"   request_id = {request.request_id}")
@@ -453,6 +471,16 @@ def print_count_response(response, elapsed_ms):
     print(f"   from_node = {response.from_node}")
     print(f"   count = {response.count}")
     print(f"   count_query_rtt_ms = {elapsed_ms:.2f}")
+
+
+def print_top_k_response(response, elapsed_ms):
+    print("SOA top-k complaints response:")
+    print(f"   response_request_id = {response.request_id}")
+    print(f"   from_node = {response.from_node}")
+    print(f"   entries_returned = {len(response.entries)}")
+    for entry in response.entries:
+        print(f"   problem_id = {entry.key} count = {entry.count}")
+    print(f"   top_k_query_rtt_ms = {elapsed_ms:.2f}")
 
 
 def run_query(stub, args, executor):
@@ -608,6 +636,20 @@ def run_count_by_status_and_created_date_range(stub, args, executor):
     print_count_response(response, count_ms)
 
 
+def run_top_k_complaints(stub, args, executor):
+    request = build_top_k_complaints_request(args)
+    print("SOA Top-K Complaints request: ")
+    print(f"   request_id = {request.request_id}")
+    print(f"   created_date_start = {request.created_date_start}")
+    print(f"   created_date_end = {request.created_date_end}")
+    print(f"   top_k = {request.top_k}")
+
+    response, top_k_ms = submit_unary_rpc(
+        executor, stub.TopKQuery, request, args.timeout
+    ).result()
+    print_top_k_response(response, top_k_ms)
+
+
 def run():
     args = parse_args()
     start_total = time.perf_counter()
@@ -642,6 +684,8 @@ def run():
                 run_count_by_agency_and_created_date_range(stub, args, executor)
             elif args.command == "count-by-status-and-created-date-range":
                 run_count_by_status_and_created_date_range(stub, args, executor)
+            elif args.command == "top-k-complaints":
+                run_top_k_complaints(stub, args, executor)
             else:
                 raise ValueError(f"Unknown command: {args.command}")
 

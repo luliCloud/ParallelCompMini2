@@ -6,6 +6,7 @@
 #include <functional>
 #include <future>
 #include <iostream>
+#include <queue>
 #include <stdexcept>
 #include <algorithm>
 #include <chrono>
@@ -250,6 +251,7 @@ bool Mini2ServiceImpl::Initialize(
     const std::string& dataset_path,
     DatasetLoadMode dataset_load_mode,
     const std::string& agency_dict_path,
+    const std::string& problem_dict_path,
     const std::string& borough_dict_path,
     const std::string& status_dict_path) {
     try {
@@ -271,6 +273,7 @@ bool Mini2ServiceImpl::Initialize(
             if (!dataset_.load_csv(
                     dataset_path,
                     agency_dict_path,
+                    problem_dict_path,
                     borough_dict_path,
                     status_dict_path)) {
                 std::cerr << "Failed to load AOS dataset from " << dataset_path 
@@ -289,6 +292,7 @@ bool Mini2ServiceImpl::Initialize(
             if (!dataset_soa_.load_csv(
                     dataset_path,
                     agency_dict_path,
+                    problem_dict_path,
                     borough_dict_path,
                     status_dict_path)) {
                 std::cerr << "Failed to load SOA dataset from " << dataset_path 
@@ -1082,6 +1086,111 @@ Status Mini2ServiceImpl::CountQuery(ServerContext* context, const SOACountReques
 
     response->set_count(total_count);
     std::cout << "[" << node_id_ << "] CountQuery returning total count: " << total_count << std::endl;
+    return Status::OK;
+}
+
+Status Mini2ServiceImpl::TopKQuery(ServerContext* context, const SOATopKRequest* request,
+                                   SOATopKResponse* response) {
+    (void)context;
+    std::cout << "[" << node_id_ << "] Received TopKQuery request: "
+              << request->request_id() << std::endl;
+
+    response->set_request_id(request->request_id());
+    response->set_from_node(node_id_);
+
+    if (!LoadsSOA(dataset_load_mode_)) {
+        return Status(
+            grpc::StatusCode::FAILED_PRECONDITION,
+            "TopKQuery requires dataset_mode soa or both");
+    }
+    if (request->created_date_start() <= 0 ||
+        request->created_date_end() <= 0 ||
+        request->created_date_end() < request->created_date_start()) {
+        return Status(
+            grpc::StatusCode::INVALID_ARGUMENT,
+            "created date range must be > 0 and start <= end");
+    }
+    if (!request->return_all_counts() && request->top_k() == 0) {
+        return Status(grpc::StatusCode::INVALID_ARGUMENT, "top_k must be > 0");
+    }
+
+    std::unordered_map<uint32_t, std::uint64_t> merged_counts;
+    try {
+        std::lock_guard<std::mutex> lock(dataset_mutex_);
+        QuerySOA query(dataset_soa_);
+        merged_counts = query.get_complaint_counts_in_created_date_range(
+            request->created_date_start(),
+            request->created_date_end());
+    } catch (const std::invalid_argument& ex) {
+        return Status(grpc::StatusCode::INVALID_ARGUMENT, ex.what());
+    } catch (const std::exception& ex) {
+        return Status(grpc::StatusCode::INTERNAL, ex.what());
+    }
+
+    std::vector<std::future<SOATopKResponse>> peer_futures;
+    if (!connected_peers_.empty()) {
+        SOATopKRequest peer_request = *request;
+        peer_request.set_return_all_counts(true);
+
+        for (const auto& peer : connected_peers_) {
+            auto* stub = peer.stub.get();
+            const std::string peer_id = peer.id;
+
+            peer_futures.push_back(std::async(
+                std::launch::async,
+                [peer_request, stub, peer_id]() {
+                    SOATopKResponse peer_response;
+                    grpc::ClientContext peer_context;
+                    peer_context.set_deadline(
+                        std::chrono::system_clock::now() + kForwardPeerTimeout);
+
+                    grpc::Status status =
+                        stub->TopKQuery(&peer_context, peer_request, &peer_response);
+                    if (!status.ok()) {
+                        std::cout << "Failed to forward top-k query to peer "
+                                  << peer_id << ": " << status.error_code()
+                                  << " " << status.error_message() << std::endl;
+                        return SOATopKResponse();
+                    }
+                    return peer_response;
+                }));
+        }
+    }
+
+    for (auto& peer_future : peer_futures) {
+        SOATopKResponse peer_response = peer_future.get();
+        for (const auto& entry : peer_response.entries()) {
+            merged_counts[entry.key()] += entry.count();
+        }
+    }
+
+    if (request->return_all_counts()) {
+        for (const auto& [key, count] : merged_counts) {
+            auto* entry = response->add_entries();
+            entry->set_key(key);
+            entry->set_count(count);
+        }
+    } else {
+        using TopKItem = std::pair<std::uint64_t, uint32_t>;
+        std::priority_queue<TopKItem> heap;
+        for (const auto& [key, count] : merged_counts) {
+            heap.emplace(count, key);
+        }
+
+        const std::size_t limit = std::min<std::size_t>(
+            static_cast<std::size_t>(request->top_k()),
+            heap.size());
+        for (std::size_t i = 0; i < limit; ++i) {
+            const auto [count, key] = heap.top();
+            heap.pop();
+            auto* entry = response->add_entries();
+            entry->set_key(key);
+            entry->set_count(count);
+        }
+    }
+
+    std::cout << "[" << node_id_ << "] TopKQuery returning "
+              << response->entries_size() << " entries" << std::endl;
     return Status::OK;
 }
 

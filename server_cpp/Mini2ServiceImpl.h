@@ -78,6 +78,7 @@ public:
         const std::string& dataset_path,
         DatasetLoadMode dataset_load_mode,
         const std::string& agency_dict_path = "",
+        const std::string& problem_dict_path = "",
         const std::string& borough_dict_path = "",
         const std::string& status_dict_path = "");
     // Set peer and set up connection
@@ -111,8 +112,8 @@ public:
     // Status GroupByQuery(ServerContext* context, const SOAGroupByRequest* request, 
     //                     SOAGroupByResponse* response) override;
                 
-    // Status TopKQuery(ServerContext* context, const SOATopKRequest* request, 
-    //                  SOATopKResponse* response) override;
+    Status TopKQuery(ServerContext* context, const SOATopKRequest* request, 
+                     SOATopKResponse* response) override;
 
     /** Streaming calls */
     Status StartForwardChunks(ServerContext* context, const QueryRequest* request,
