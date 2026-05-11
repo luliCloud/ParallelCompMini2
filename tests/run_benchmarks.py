@@ -27,6 +27,7 @@ MAX_GRPC_MESSAGE_BYTES = 512 * 1024 * 1024
 TOTAL_QUERY_COMPLETION_BENCHMARK = "total-query-completion-time"
 CHUNK_SIZE_BENCHMARK = "chunk-size-performance"
 CONCURRENT_REQUESTS_BENCHMARK = "concurrent-requests-performance"
+PRIORITY_MIX_BENCHMARK = "priority-mix-concurrent"
 REPORT_SEPARATOR = "=" * 96
 
 
@@ -40,6 +41,9 @@ class BenchmarkConfig:
     concurrent_requests: tuple[int, ...] = (1, 2, 4, 8)
     concurrent_agency_ids: tuple[int, ...] = tuple(range(20))
     concurrent_borough_ids: tuple[int, ...] = (1, 2, 3, 4, 5)
+    priority_mix_concurrent_requests: tuple[int, ...] = (4, 8)
+    priority_mix_zip_code: int = 11203
+    priority_mix_agency_id: int = 10
     query: str = "agency"
     agency_id: int = 10
     borough_id: int = 1
@@ -99,6 +103,20 @@ class ConcurrentBenchmarkResult:
     batch_ms: float | None
     records_received: int
     chunks_received: int
+    error: str
+
+
+@dataclass(frozen=True)
+class PriorityMixResult:
+    benchmark: str
+    mode: str
+    concurrent_requests: int
+    repeat: int
+    priority_label: str
+    priority_value: int
+    dt_ms: float | None
+    records_received: int
+    returncode: int
     error: str
 
 
@@ -554,6 +572,47 @@ def make_concurrent_request_mutator(
     return mutate
 
 
+def _apply_zip(req: object, config: BenchmarkConfig) -> None:
+    req.zip_code = config.priority_mix_zip_code
+
+
+def _apply_geo(req: object, config: BenchmarkConfig) -> None:
+    req.lat_min = config.lat_min
+    req.lat_max = config.lat_max
+    req.lon_min = config.lon_min
+    req.lon_max = config.lon_max
+
+
+def _apply_agency(req: object, config: BenchmarkConfig) -> None:
+    req.agency_id = config.priority_mix_agency_id
+
+
+def _apply_nofilter(_req: object, _config: BenchmarkConfig) -> None:
+    return None
+
+
+PRIORITY_MIX_VARIANTS: tuple[tuple[str, int, Callable[[object, BenchmarkConfig], None]], ...] = (
+    ("P1_zip", 1, _apply_zip),
+    ("P2_geo", 2, _apply_geo),
+    ("P3_agency", 3, _apply_agency),
+    ("P4_nofilter", 4, _apply_nofilter),
+)
+
+
+def make_priority_mix_mutator(
+    config: BenchmarkConfig,
+    variant_index: int,
+) -> tuple[str, int, Callable[[object], None]]:
+    label, priority_value, apply = PRIORITY_MIX_VARIANTS[
+        variant_index % len(PRIORITY_MIX_VARIANTS)
+    ]
+
+    def mutate(request: object) -> None:
+        apply(request, config)
+
+    return label, priority_value, mutate
+
+
 def concurrent_variant_base(config: BenchmarkConfig, concurrent_requests: int) -> int:
     base = 0
     for configured_concurrency in config.concurrent_requests:
@@ -706,6 +765,87 @@ def benchmark_concurrent_requests(
     return average_concurrent_results(warm_results)
 
 
+def run_priority_mix_batch(
+    stub: object,
+    mini2_pb2: ModuleType,
+    mode: ModeSpec,
+    config: BenchmarkConfig,
+    concurrent_requests: int,
+    repeat: int,
+) -> list[PriorityMixResult]:
+    query = make_query_spec(config)
+
+    labeled_mutators: list[tuple[str, int, Callable[[object], None]]] = [
+        make_priority_mix_mutator(config, i) for i in range(concurrent_requests)
+    ]
+
+    def run_one(slot: int) -> BenchmarkResult:
+        _, _, mutator = labeled_mutators[slot]
+        return run_case(
+            stub,
+            mini2_pb2,
+            query,
+            mode,
+            config,
+            PRIORITY_MIX_BENCHMARK,
+            config.chunk_size,
+            repeat,
+            request_mutator=mutator,
+        )
+
+    with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
+        futures = [executor.submit(run_one, i) for i in range(concurrent_requests)]
+        bench_results = [f.result() for f in futures]
+
+    out: list[PriorityMixResult] = []
+    for slot, br in enumerate(bench_results):
+        label, priority_value, _ = labeled_mutators[slot]
+        out.append(
+            PriorityMixResult(
+                benchmark=PRIORITY_MIX_BENCHMARK,
+                mode=mode.name,
+                concurrent_requests=concurrent_requests,
+                repeat=repeat,
+                priority_label=label,
+                priority_value=priority_value,
+                dt_ms=br.dt_ms,
+                records_received=br.records_received,
+                returncode=br.returncode,
+                error=br.error,
+            )
+        )
+    return out
+
+
+def benchmark_priority_mix(
+    stub: object,
+    mini2_pb2: ModuleType,
+    config: BenchmarkConfig,
+) -> list[PriorityMixResult]:
+    """Send mixed-priority requests concurrently to expose FIFO vs Priority scheduling."""
+    results: list[PriorityMixResult] = []
+
+    for mode in selected_modes(config):
+        for concurrent_requests in config.priority_mix_concurrent_requests:
+            for repeat in range(1, config.warm_repeats + 1):
+                results.extend(
+                    run_priority_mix_batch(
+                        stub=stub,
+                        mini2_pb2=mini2_pb2,
+                        mode=mode,
+                        config=config,
+                        concurrent_requests=concurrent_requests,
+                        repeat=repeat,
+                    )
+                )
+                if config.fail_fast and any(
+                    r.returncode != 0 for r in results[-concurrent_requests:]
+                ):
+                    return results
+
+    return results
+
+
 def print_benchmark_report(
     benchmark_name: str,
     config: BenchmarkConfig,
@@ -833,6 +973,71 @@ def print_result_section(
     print_result_table("", results, include_chunk_size=include_chunk_size)
 
 
+def print_priority_mix_report(
+    config: BenchmarkConfig,
+    results: Sequence[PriorityMixResult],
+) -> None:
+    print(REPORT_SEPARATOR)
+    print(f"Benchmark name: {PRIORITY_MIX_BENCHMARK}.")
+    print(
+        "Warm start. Each request gets a different priority class so FIFO and"
+        " priority queue modes can be distinguished."
+    )
+    print(f"Variants per slot: {', '.join(v[0] for v in PRIORITY_MIX_VARIANTS)}")
+    print(f"repeated: {config.warm_repeats}")
+    print()
+
+    # group by (mode, concurrent_requests, priority_label) -> avg dt_ms across repeats
+    by_mode: dict[str, dict[int, dict[str, list[float]]]] = {}
+    for r in results:
+        if r.dt_ms is None:
+            continue
+        m = by_mode.setdefault(r.mode, {})
+        cc = m.setdefault(r.concurrent_requests, {})
+        cc.setdefault(r.priority_label, []).append(r.dt_ms)
+
+    labels = [v[0] for v in PRIORITY_MIX_VARIANTS]
+    header_cols = ["mode", "concurrent"] + [f"{lbl}_ms" for lbl in labels] + ["spread_ms"]
+    rows: list[list[str]] = []
+    for mode in config.modes:
+        if mode not in by_mode:
+            continue
+        for cc in sorted(by_mode[mode]):
+            row = [mode, str(cc)]
+            per_lbl_avg: list[float] = []
+            for lbl in labels:
+                vals = by_mode[mode][cc].get(lbl)
+                if not vals:
+                    row.append("-")
+                else:
+                    avg = sum(vals) / len(vals)
+                    per_lbl_avg.append(avg)
+                    row.append(f"{avg:.2f}")
+            if len(per_lbl_avg) >= 2:
+                row.append(f"{max(per_lbl_avg) - min(per_lbl_avg):.2f}")
+            else:
+                row.append("-")
+            rows.append(row)
+
+    widths = [
+        max(len(header_cols[i]), max((len(r[i]) for r in rows), default=0))
+        for i in range(len(header_cols))
+    ]
+    fmt_row = lambda r: "  ".join(c.ljust(widths[i]) for i, c in enumerate(r))
+    print(fmt_row(header_cols))
+    print(fmt_row(["-" * w for w in widths]))
+    for r in rows:
+        print(fmt_row(r))
+    print()
+    print(
+        "Interpretation: in FIFO mode the four priority labels should land in"
+        " roughly arrival order (no systematic ranking). In priority mode P1_zip"
+        " should finish fastest, P4_nofilter slowest. A large spread_ms with a"
+        " consistent P1 < P2 < P3 < P4 ordering indicates the priority queue is"
+        " active."
+    )
+
+
 def main() -> int:
     config = BenchmarkConfig()
     all_results: list[BenchmarkResult | ConcurrentBenchmarkResult] = []
@@ -880,6 +1085,34 @@ def main() -> int:
                     concurrent_warm_average_results,
                 )
                 all_results.extend(concurrent_warm_average_results)
+
+            if not any(result.returncode != 0 for result in all_results):
+                priority_mix_results = benchmark_priority_mix(
+                    stub,
+                    mini2_pb2,
+                    config,
+                )
+                print_priority_mix_report(config, priority_mix_results)
+                if any(r.returncode != 0 for r in priority_mix_results):
+                    all_results.append(
+                        BenchmarkResult(
+                            benchmark=PRIORITY_MIX_BENCHMARK,
+                            query="mixed",
+                            mode="mixed",
+                            chunk_size=config.chunk_size,
+                            repeat=0,
+                            request_id="",
+                            returncode=1,
+                            dt_ms=None,
+                            start_forward_chunks_ms=None,
+                            chunks_received=0,
+                            records_received=0,
+                            session_total_chunks=0,
+                            session_total_records=0,
+                            final_chunk_index=-1,
+                            error="priority_mix had failed requests",
+                        )
+                    )
         finally:
             channel.close()
 
