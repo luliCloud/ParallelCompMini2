@@ -32,7 +32,7 @@ REPORT_SEPARATOR = "=" * 96
 
 @dataclass(frozen=True)
 class BenchmarkConfig:
-    server: str = "localhost:50051"
+    server: str = "10.0.0.16:50051"
     timeout_seconds: float = 120.0
     warm_repeats: int = 3
     chunk_size: int = 5000
@@ -41,7 +41,7 @@ class BenchmarkConfig:
     concurrent_agency_ids: tuple[int, ...] = tuple(range(20))
     concurrent_borough_ids: tuple[int, ...] = (1, 2, 3, 4, 5)
     query: str = "agency"
-    agency_id: int = 1
+    agency_id: int = 10
     borough_id: int = 1
     lat_min: float = 40.7
     lat_max: float = 40.8
